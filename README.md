@@ -89,17 +89,12 @@ opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_
         else lpad(to_char(100*num_rows/table_rows,'fmB999 %'),6) end coverage
       ,* from benchruns order by job_id desc nulls last limit 10;
       
-    duration     | riops  | pct_scratch | coverage | job_id |         start_time         |          end_time          | num_batches | num_rows | pct_update | max_scratch | prepared | index_onl
-y | tab_rows | batch_size | table_name | table_rows | table_scratch
------------------+--------+-------------+----------+--------+----------------------------+----------------------------+-------------+----------+------------+-------------+----------+----------
---+----------+------------+------------+------------+---------------
- 00:00:10.955194 | 146049 |             |          |      4 | 2021-07-29 17:02:01.634353 | 2021-07-29 17:02:12.589547 |          16 |  1600000 |         42 |     1000002 | t        | f
-  |  1000000 |     100000 | bench0001  |            |
-                 |        |             |          |      3 | 2021-07-29 17:01:48.068406 |                            |             |          |         42 |             | t        | f
-  |  1000000 |      10000 | bench0001  |            |
-                 |        |             |          |      2 | 2021-07-29 17:01:40.47442  |                            |             |          |         42 |             | t        | f
-  |  1000000 |      10000 | bench0001  |            |
-                 |        |             |          |      1 | 2021-07-29 17:00:36.821699 |                            |             |          |         42 |             | t        | f
-  |  1000000 |     100000 | bench0001  |            |
+    duration     | riops  | pct_scratch | coverage | job_id |         start_time         |          end_time          | num_batches | num_rows | pct_update | max_scratch | prepared | index_only | tab_rows | batch_size | table_name | table_rows | table_scratch
+-----------------+--------+-------------+----------+--------+----------------------------+----------------------------+-------------+----------+------------+-------------+----------+------------+----------+------------+------------+------------+---------------
+ 00:00:10.955194 | 146049 |             |          |      4 | 2021-07-29 17:02:01.634353 | 2021-07-29 17:02:12.589547 |          16 |  1600000 |         42 |     1000002 | t        | f          |  1000000 |     100000 | bench0001  |            |
+                 |        |             |          |      3 | 2021-07-29 17:01:48.068406 |                            |             |          |         42 |             | t        | f          |  1000000 |      10000 | bench0001  |            |
+                 |        |             |          |      2 | 2021-07-29 17:01:40.47442  |                            |             |          |         42 |             | t        | f          |  1000000 |      10000 | bench0001  |            |
+                 |        |             |          |      1 | 2021-07-29 17:00:36.821699 |                            |             |          |         42 |             | t        | f          |  1000000 |     100000 | bench0001  |            |
 (4 rows)
 ```
+The RIOPS here is the rows per second that were read or updated.
