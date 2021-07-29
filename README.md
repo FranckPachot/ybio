@@ -53,6 +53,7 @@ yugabyte=# explain (analyze) with u as (update bench0001 set scratch=scratch+1 w
  Execution Time: 2.670 ms
 ```
 
+It can be interesting to read this post I've written when running PGIO on YDB: https://dev.to/yugabyte/slob-on-yugabytedb-1a32
 
 # install
 
