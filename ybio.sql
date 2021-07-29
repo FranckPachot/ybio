@@ -79,9 +79,9 @@ END; $setup$;
 drop table if exists benchruns;
 
 create table benchruns(job_id serial,start_time timestamp, end_time timestamp
-,num_batches int, num_rows int, pct_update int, max_scratch int
+,num_batches int, num_rows bigint, pct_update int, max_scratch bigint
 , prepared boolean, index_only boolean, tab_rows int, batch_size int
-,table_name text, table_rows int, table_scratch int
+,table_name text, table_rows bigint, table_scratch bigint
 , primary key(job_id));
 
 /*
@@ -124,8 +124,8 @@ declare
  num_updated float:=0;
  num_batches int:=0;
  out_count int;
- out_scratch int;
- max_scratch int:=0;
+ out_scratch bigint;
+ max_scratch bigint:=0;
  sql_select text;
  sql_update text;
  first_key int;
