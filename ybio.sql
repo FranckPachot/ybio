@@ -180,10 +180,10 @@ begin
    if out_scratch>max_scratch then max_scratch=out_scratch; end if;
    exit when clock_timestamp() >= clock_end;
    raise notice '% rows/s on %, job: % batch#: %, total: % rows read, % % updated, last: % rows between  % and %'
-    ,to_char(round(num_rows/extract(epoch from clock_timestamp()-clock_start)),'9999999') -- RIOPS from start
+    ,to_char(round(num_rows/extract(epoch from clock_timestamp()-clock_start)),'999999') -- RIOPS from start
     ,tab_prefix||to_char(tab_num,'fm0000') -- table name
     ,to_char(job_id,'99999') -- job number
-    ,to_char(num_batches,'9999') -- number of iterations from start
+    ,to_char(num_batches,'999999') -- number of iterations from start
     ,to_char(num_rows,'99999999999') -- total number of rows read
     ,to_char(100*num_updated/num_rows,'999D9'),'%' -- percentage updated
     ,(out_count) -- number of rows read
