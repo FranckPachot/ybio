@@ -1,9 +1,58 @@
 # ybio
-ybio is a micro-benchmarking row access for PostgreSQL or YugabyteDB (based on https://github.com/therealkevinc/pgio) following Kevin Closson SLOB method (https://kevinclosson.net/slob/)
+ybio is a micro-benchmarking row access for PostgreSQL or YugabyteDB based on https://github.com/therealkevinc/pgio, following Kevin Closson SLOB method (https://kevinclosson.net/slob/. The main difference is that PGIO (and SLOB) are designed for block-based heap tables whereas this alternative is designed for YugabyteDB which stores rows in DocDB which is a LSM Tree document store.
 
 The idea is to read rows at random with a table in order to get an homogeneous workload and predictable measure in order to test a platform (compare compute shapes, CPU, processor architecture, block storage, memory,...). The parameters (number of rows, percentage of updates help to focus on the right workload (measure CPU and memory with a scale that fits in cache, disk IOPS with larger scale, concurrent access when touching the same table,...)
 
-PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this program is adapted to be run both on PostgreSQL and PostgreSQL compatible database (like YugabyteDB https://www.yugabyte.com/)
+PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this program is adapted to be run both on PostgreSQL and PostgreSQL compatible database (like YugabyteDB https://www.yugabyte.com/).
+
+# understand
+
+It is important to understand the access path. The table created is hash-shareded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordred on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
+
+The access path with the default index_ony=>false is:
+```
+yugabyte=# explain (analyze, verbose) select count(*),sum(scratch) from bench0001 where mykey between 1 and 10;
+                                                                 QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.30..5.31 rows=1 width=40) (actual time=2.214..2.214 rows=1 loops=1)
+   Output: count(*), sum(scratch)
+   ->  Index Scan using bench0001_asc_mykey on public.bench0001  (cost=0.00..5.25 rows=10 width=8) (actual time=2.056..2.056 rows=0 loops=1)
+         Output: mykey, scratch, filler
+         Index Cond: ((bench0001.mykey >= 1) AND (bench0001.mykey <= 10))
+ Planning Time: 0.053 ms
+ Execution Time: 2.267 ms
+```
+
+When specifying index_only=>true (in case you want to measure range scans rather than random reads):
+```
+yugabyte=# explain (analyze, verbose) select count(*),sum(mykey) from bench0001 where mykey between 1 and 10;
+                                                                    QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.20..5.21 rows=1 width=40) (actual time=2.697..2.697 rows=1 loops=1)
+   Output: count(*), sum(mykey)
+   ->  Index Only Scan using bench0001_asc_mykey on public.bench0001  (cost=0.00..5.15 rows=10 width=8) (actual time=2.693..2.693 rows=0 loops=1)
+         Output: mykey
+         Index Cond: ((bench0001.mykey >= 1) AND (bench0001.mykey <= 10))
+         Heap Fetches: 0
+ Planning Time: 0.057 ms
+ Execution Time: 2.740 ms
+```
+
+Finally, when defining a pct_update>0 the following update will be run instead of the select with the desired frequency:
+```
+yugabyte=# explain (analyze) with u as (update bench0001 set scratch=scratch+1 where mykey between 1 and 10 returning 1,scratch) select count(*),max(scratch) from u;
+                                                                   QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.53..5.54 rows=1 width=16) (actual time=1.203..1.204 rows=1 loops=1)
+   CTE u
+     ->  Update on bench0001  (cost=0.00..5.28 rows=10 width=104) (actual time=1.200..1.200 rows=0 loops=1)
+           ->  Index Scan using bench0001_asc_mykey on bench0001  (cost=0.00..5.28 rows=10 width=104) (actual time=1.199..1.199 rows=0 loops=1)
+                 Index Cond: ((mykey >= 1) AND (mykey <= 10))
+   ->  CTE Scan on u  (cost=0.00..0.20 rows=10 width=8) (actual time=1.201..1.201 rows=0 loops=1)
+ Planning Time: 0.756 ms
+ Execution Time: 2.670 ms
+```
+
 
 # install
 
