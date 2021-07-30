@@ -154,6 +154,8 @@ opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_
 ```
 The RIOPS here is the rows per second that were read or updated.
 
+![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
+
 # next steps
 
 The table and index creation can be customized to test different things. I plan to add tablet splitting for the index (currently, as it is a range index it has only one tablet so the workload is not distributed on all nodes for the index lookup)
