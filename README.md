@@ -154,8 +154,7 @@ opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_
 ```
 The RIOPS here is the rows per second that were read or updated.
 
-Here is an example where I graph'd it with [Arctype](https://blog.yugabyte.com/connecting-to-yugabytedb-with-arctype-a-collaborative-sql-client/).
-![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
+Here is an example where I graph'd it with [Arctype](https://blog.yugabyte.com/connecting-to-yugabytedb-with-arctype-a-collaborative-sql-client/) to see the impact of the batch_size parameter on the read rate - minimizing the calls between YSQL and DocDB by reading 10's thousand of rows can reach 75000 rows per second here (and this is how we can scale with SQL): ![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
 
 # next steps
 
