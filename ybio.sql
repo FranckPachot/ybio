@@ -28,6 +28,9 @@ drop procedure if exists setup;
  * of rows. Rows have a "mykey" int column, indexed, which is the one we will query.
  * The "scratch" column is random to be sure to scatter rows within the table. The 
  * "filler" just adds some bytes to it.
+ *
+ * TODO: change batches parameter to batch_size
+ *
  */
 
 create or replace procedure setup(
@@ -46,6 +49,8 @@ create or replace procedure setup(
    recreate boolean default true
 ) language plpgsql as
 $setup$
+declare
+ clock_start timestamp;
 begin
   -- by default we do batches of 1000 rows but only one batch if the number of rows is smaller
   if batches = 0 then batches:=ceil(tab_rows/1000); end if;
@@ -57,6 +62,7 @@ begin
   execute format('create index if not exists %I_asc_mykey on %I(mykey asc)',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'));
   -- insert rows in several passes
   raise notice 'Inserting % rows in % batches of %',tab_rows,batches,ceil(tab_rows/batches);
+  clock_start= clock_timestamp();
   for i in 1..batches loop
     -- generate numbers and shuffle them with the random scratch
     execute format('insert into %I 
@@ -64,7 +70,7 @@ begin
      from generate_series(1,%s) order by scratch'
     ,tab_prefix||to_char(tab_num,'fm0000'),batches,i,tab_rows,'',filler,ceil(tab_rows/batches));
     -- output a message for each loop
-    raise notice 'Table % Progress: % % (% rows)',tab_prefix||to_char(tab_num,'fm0000'),to_char((100*(i::float)/batches),'999.99'),'%',i*tab_rows/batches;
+    raise notice 'Table % Progress: % % (% rows) at % rows/s',tab_prefix||to_char(tab_num,'fm0000'),to_char((100*(i::float)/batches),'999.99'),'%',to_char(i*tab_rows/batches,'99999999999'),to_char((i*tab_rows/batches)/extract(epoch from clock_timestamp()-clock_start),'999999');
     -- intermediate commit for each batch
     commit;
     end loop;
