@@ -14,11 +14,9 @@
  *  - benchruns will store the runs results
  */
 
---\set ON_ERROR_STOP on
+\set ON_ERROR_STOP on
 
 drop procedure if exists setup;
-
---\df setup;
 
 /*
  * SETUP
@@ -52,7 +50,7 @@ begin
   -- there's a flag to drop the existing tables	
   if recreate then execute format('drop table if exists %I',tab_prefix||to_char(tab_num,'fm0000')); end if;
   -- create the table
-  execute format('create table if not exists %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tablets when 0 then '' else format('split into %s tablets',tablets)end);
+  execute format('create table %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tablets when 0 then '' else format('split into %s tablets',tablets)end);
   -- index the table on mykey (could be done afterwards but I like homogenous work)
   execute format('create index if not exists %I_asc_mykey on %I(mykey asc)',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'));
   -- insert rows in several passes
