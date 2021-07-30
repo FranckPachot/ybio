@@ -189,6 +189,8 @@ begin
     ,(first_key+batch_size-1) -- the between range end
     ,(first_key) -- the between range start
    ;
+    -- intermediate commit for each batch
+    commit;
   end loop;
     if prepared then
      deallocate myselect;
