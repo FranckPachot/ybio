@@ -1,9 +1,11 @@
+export PGHOST PGUSER PGPASSWORD PGDATABASE PGPORT
+
 # create setup() and runit() procedures, and the benchruns table:
-psql -e ybio.sql
+psql -e < ybio.sql
 # create two tables:
-for i in {1..1} ; do psql <<<"call setup(tab_prefix=>'bench',tab_num=>${i},tab_rows=>1e6::int);" ; done ; wait
+for i in {1..4} ; do psql <<<"call setup(tab_prefix=>'bench',tab_num=>${i},tab_rows=>1e7::int,batch_size=>100000);" & done ; wait
 #
-for i in {1..1} ; do psql <<<"call runit(tab_prefix=>'bench',tab_num=>${i},tab_rows=>1e6::int,run_duration=>interval '1 minutes',pct_update=>5);" & done ; wait
+for i in {1..4} ; do psql <<<"call runit(tab_prefix=>'bench',tab_num=>${i},tab_rows=>1e7::int,batch_size=>1000,run_duration=>interval '1 hour',pct_update=>10);" & done ; wait
 
 # for YugabyteDB you can look at http://${PGHOST}:7000/tablet-servers to watch Read/Write ops/sec
 
