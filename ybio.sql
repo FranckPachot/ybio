@@ -28,9 +28,6 @@ drop procedure if exists setup;
  * of rows. Rows have a "mykey" int column, indexed, which is the one we will query.
  * The "scratch" column is random to be sure to scatter rows within the table. The 
  * "filler" just adds some bytes to it.
- *
- * TODO: change batches parameter to batch_size
- *
  */
 
 create or replace procedure setup(
@@ -39,8 +36,8 @@ create or replace procedure setup(
    tab_num int default 1,
    -- number of table rows to insert
    tab_rows bigint default 1e6,
-   -- rows are inserted by batch (0 will default thousand rows batches)
-   batches bigint default 0,
+   -- rows are inserted by batch of batch_size rows
+   batch_size bigint default 1000,
    -- split into tablets (0 means the default)
    tablets int default 0,
    -- filler characters (not very useful here)
@@ -52,8 +49,6 @@ $setup$
 declare
  clock_start timestamp;
 begin
-  -- by default we do batches of 1000 rows but only one batch if the number of rows is smaller
-  if batches = 0 then batches:=ceil(tab_rows/1000); end if;
   -- there's a flag to drop the existing tables	
   if recreate then execute format('drop table if exists %I',tab_prefix||to_char(tab_num,'fm0000')); end if;
   -- create the table
@@ -61,16 +56,16 @@ begin
   -- index the table on mykey (could be done afterwards but I like homogenous work)
   execute format('create index if not exists %I_asc_mykey on %I(mykey asc)',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'));
   -- insert rows in several passes
-  raise notice 'Inserting % rows in % batches of %',tab_rows,batches,ceil(tab_rows/batches);
+  raise notice 'Inserting % rows in % batches of %',tab_rows,ceil(tab_rows/batch_size),batch_size;
   clock_start= clock_timestamp();
-  for i in 1..batches loop
+  for i in 1..ceil(tab_rows/batch_size) loop
     -- generate numbers and shuffle them with the random scratch
     execute format('insert into %I 
      select generate_series::bigint*%s+%s mykey, (random()*%s)::bigint as scratch , lpad(%L,%s,md5(random()::text)) filler 
      from generate_series(1,%s) order by scratch'
-    ,tab_prefix||to_char(tab_num,'fm0000'),batches,i,tab_rows,'',filler,ceil(tab_rows/batches));
+    ,tab_prefix||to_char(tab_num,'fm0000'),ceil(tab_rows/batch_size),i,tab_rows,'',filler,batch_size);
     -- output a message for each loop
-    raise notice 'Table % Progress: % % (% rows) at % rows/s',tab_prefix||to_char(tab_num,'fm0000'),to_char((100*(i::float)/batches),'999.99'),'%',to_char(i*tab_rows/batches,'99999999999'),to_char((i*tab_rows/batches)/extract(epoch from clock_timestamp()-clock_start),'999999');
+    raise notice 'Table % Progress: % % (% rows) at % rows/s',tab_prefix||to_char(tab_num,'fm0000'),to_char((100*(i::float)/ceil(tab_rows/batch_size)),'999.99'),'%',to_char(i*batch_size,'99999999999'),to_char((i*batch_size)/extract(epoch from clock_timestamp()-clock_start),'999999');
     -- intermediate commit for each batch
     commit;
     end loop;

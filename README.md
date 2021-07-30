@@ -15,7 +15,7 @@ call the setup() procedure
 
 example:
 ```
-call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batches=>100);
+call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batch_size=>10000);
 ```
 will create a bench0001 table with 1 million rows, in 100 batches of 10000 rows (this si important fir YugabyteDB that is optimized for OLTP with short transactions).
 Additional parameters:
@@ -27,7 +27,7 @@ You can create many tables (with a different tab_num) if you want to run multipl
 
 Example of output:
 ```
-yb=> call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batches=>10);
+yb=> call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batch_size=>100000);
 NOTICE:  Inserting 1000000 rows in 10 batches of 100000
 NOTICE:  Table bench0001 Progress:   10.00 % (100000 rows)
 NOTICE:  Table bench0001 Progress:   20.00 % (200000 rows)
