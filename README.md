@@ -154,6 +154,7 @@ opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_
 ```
 The RIOPS here is the rows per second that were read or updated.
 
+Here is an example where I graph'd it with [Arctype](https://blog.yugabyte.com/connecting-to-yugabytedb-with-arctype-a-collaborative-sql-client/).
 ![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
 
 # next steps
