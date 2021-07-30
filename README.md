@@ -69,7 +69,8 @@ call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batch_size=>10000);
 ```
 will create a bench0001 table with 1 million rows, in 100 batches of 10000 rows (this si important fir YugabyteDB that is optimized for OLTP with short transactions).
 Additional parameters:
- - tab_tablets: defines the number of YugabyteDB tablets for the table. The default 0 will use the default from the YB server
+ - tab_tablets: defines the number of YugabyteDB tablets for the table (SPLIT INTO clause). The default 0 will use the default from the YB server
+ - ind_tablets: defines the number of YugabyteDB tablets for the index (SPLIT AT clause). The default 0 will use the default (one tablet).
  - filler: is the size of an additional column in the rows that can be used to create larger rows
  - recreate: by defautl at true which will drop the existing tables before re-creating them
 
@@ -156,6 +157,3 @@ The RIOPS here is the rows per second that were read or updated.
 
 Here is an example where I graph'd it with [Arctype](https://blog.yugabyte.com/connecting-to-yugabytedb-with-arctype-a-collaborative-sql-client/) to see the impact of the batch_size parameter on the read rate - minimizing the calls between YSQL and DocDB by reading 10's thousand of rows can reach 75000 rows per second from a single session here (and this is how we can scale thanks to SQL and PL/pgSQL): ![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
 
-# next steps
-
-The table and index creation can be customized to test different things. I plan to add tablet splitting for the index (currently, as it is a range index it has only one tablet so the workload is not distributed on all nodes for the index lookup)

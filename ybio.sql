@@ -37,7 +37,8 @@ create or replace procedure setup(
    -- rows are inserted by batch of batch_size rows
    batch_size bigint default 1000,
    -- split into tablets (0 means the default)
-   tablets int default 0,
+   tab_tablets int default 0,
+   ind_tablets int default 0,
    -- filler characters (not very useful here)
    filler int default 1,
    -- drops the table to recreate it
@@ -46,13 +47,23 @@ create or replace procedure setup(
 $setup$
 declare
  clock_start timestamp;
+ ind_split_clause text:='';
 begin
   -- there's a flag to drop the existing tables	
   if recreate then execute format('drop table if exists %I',tab_prefix||to_char(tab_num,'fm0000')); end if;
   -- create the table
-  execute format('create table %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tablets when 0 then '' else format('split into %s tablets',tablets)end);
+  execute format('create table %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tab_tablets when 0 then '' else format('split into %s tablets',tab_tablets)end);
   -- index the table on mykey (could be done afterwards but I like homogenous work)
-  execute format('create index if not exists %I_asc_mykey on %I(mykey asc)',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'));
+  -- build the SPLIT AT clause for CREATE INDEX	
+  if ind_tablets>0 then
+   ind_split_clause:=format(' split at values(');
+   for i in 1..ind_tablets-1 loop
+    if i>1 then ind_split_clause:=format('%s%s',ind_split_clause,','); end if;
+    ind_split_clause:=format('%s(%s)',ind_split_clause,ceil(i*tab_rows/ind_tablets));
+   end loop;
+   ind_split_clause:=format('%s)',ind_split_clause);
+  end if;
+  execute format('create index if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
   -- insert rows in several passes
   raise notice 'Inserting % rows in % batches of %',tab_rows,ceil(tab_rows/batch_size),batch_size;
   clock_start= clock_timestamp();
