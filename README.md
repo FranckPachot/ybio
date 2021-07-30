@@ -1,9 +1,59 @@
 # ybio
-ybio is a micro-benchmarking row access for PostgreSQL or YugabyteDB (based on https://github.com/therealkevinc/pgio) following Kevin Closson SLOB method (https://kevinclosson.net/slob/)
+ybio is a row-access micro-benchmarking for PostgreSQL or YugabyteDB based on https://github.com/therealkevinc/pgio, following Kevin Closson SLOB method (https://kevinclosson.net/slob/). The main difference is that PGIO (for PostgreSQL, and SLOB for Oracle) are designed for block-based heap tables whereas this ybio alternative is designed for YugabyteDB which stores rows in DocDB which is a LSM Tree document store. What we measure is a number of rows per second (RIOPS - Row IO per second).
 
-The idea is to read rows at random with a table in order to get an homogeneous workload and predictable measure in order to test a platform (compare compute shapes, CPU, processor architecture, block storage, memory,...). The parameters (number of rows, percentage of updates help to focus on the right workload (measure CPU and memory with a scale that fits in cache, disk IOPS with larger scale, concurrent access when touching the same table,...)
+The idea is to read rows at random within a table in order to get an homogeneous workload, and predictable measure, to test a platform (compare compute shapes, CPU, processor architecture, block storage, memory, IO path...). The parameters (number of rows, percentage of updates,... can be set to focus on the desired workload (measure CPU and memory with a scale that fits in cache, disk IOPS with larger scale, concurrent access when touching the same table from multiple sessions,...)
 
-PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this program is adapted to be run both on PostgreSQL and PostgreSQL compatible database (like YugabyteDB https://www.yugabyte.com/)
+The original PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this ybio is adapted to be run both on PostgreSQL and any PostgreSQL compatible database (like YugabyteDB https://www.yugabyte.com/) whatever the storage engine.
+
+# understand
+
+It is important to understand the access path. The table created is hash-sharded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordred on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
+
+The access path with the default index_ony=>false is:
+```
+yugabyte=# explain (analyze, verbose) select count(*),sum(scratch) from bench0001 where mykey between 1 and 10;
+                                                                 QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.30..5.31 rows=1 width=40) (actual time=2.214..2.214 rows=1 loops=1)
+   Output: count(*), sum(scratch)
+   ->  Index Scan using bench0001_asc_mykey on public.bench0001  (cost=0.00..5.25 rows=10 width=8) (actual time=2.056..2.056 rows=0 loops=1)
+         Output: mykey, scratch, filler
+         Index Cond: ((bench0001.mykey >= 1) AND (bench0001.mykey <= 10))
+ Planning Time: 0.053 ms
+ Execution Time: 2.267 ms
+```
+
+When specifying index_only=>true (in case you want to measure range scans rather than random reads):
+```
+yugabyte=# explain (analyze, verbose) select count(*),sum(mykey) from bench0001 where mykey between 1 and 10;
+                                                                    QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.20..5.21 rows=1 width=40) (actual time=2.697..2.697 rows=1 loops=1)
+   Output: count(*), sum(mykey)
+   ->  Index Only Scan using bench0001_asc_mykey on public.bench0001  (cost=0.00..5.15 rows=10 width=8) (actual time=2.693..2.693 rows=0 loops=1)
+         Output: mykey
+         Index Cond: ((bench0001.mykey >= 1) AND (bench0001.mykey <= 10))
+         Heap Fetches: 0
+ Planning Time: 0.057 ms
+ Execution Time: 2.740 ms
+```
+
+Finally, when defining a pct_update>0 the following update will be run instead of the select with the desired frequency:
+```
+yugabyte=# explain (analyze) with u as (update bench0001 set scratch=scratch+1 where mykey between 1 and 10 returning 1,scratch) select count(*),max(scratch) from u;
+                                                                   QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=5.53..5.54 rows=1 width=16) (actual time=1.203..1.204 rows=1 loops=1)
+   CTE u
+     ->  Update on bench0001  (cost=0.00..5.28 rows=10 width=104) (actual time=1.200..1.200 rows=0 loops=1)
+           ->  Index Scan using bench0001_asc_mykey on bench0001  (cost=0.00..5.28 rows=10 width=104) (actual time=1.199..1.199 rows=0 loops=1)
+                 Index Cond: ((mykey >= 1) AND (mykey <= 10))
+   ->  CTE Scan on u  (cost=0.00..0.20 rows=10 width=8) (actual time=1.201..1.201 rows=0 loops=1)
+ Planning Time: 0.756 ms
+ Execution Time: 2.670 ms
+```
+
+It can be interesting to read this post I've written when running PGIO on YDB: https://dev.to/yugabyte/slob-on-yugabytedb-1a32
 
 # install
 
@@ -89,12 +139,23 @@ opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_
         else lpad(to_char(100*num_rows/table_rows,'fmB999 %'),6) end coverage
       ,* from benchruns order by job_id desc nulls last limit 10;
       
-    duration     | riops  | pct_scratch | coverage | job_id |         start_time         |          end_time          | num_batches | num_rows | pct_update | max_scratch | prepared | index_only | tab_rows | batch_size | table_name | table_rows | table_scratch
------------------+--------+-------------+----------+--------+----------------------------+----------------------------+-------------+----------+------------+-------------+----------+------------+----------+------------+------------+------------+---------------
- 00:00:10.955194 | 146049 |             |          |      4 | 2021-07-29 17:02:01.634353 | 2021-07-29 17:02:12.589547 |          16 |  1600000 |         42 |     1000002 | t        | f          |  1000000 |     100000 | bench0001  |            |
-                 |        |             |          |      3 | 2021-07-29 17:01:48.068406 |                            |             |          |         42 |             | t        | f          |  1000000 |      10000 | bench0001  |            |
-                 |        |             |          |      2 | 2021-07-29 17:01:40.47442  |                            |             |          |         42 |             | t        | f          |  1000000 |      10000 | bench0001  |            |
-                 |        |             |          |      1 | 2021-07-29 17:00:36.821699 |                            |             |          |         42 |             | t        | f          |  1000000 |     100000 | bench0001  |            |
-(4 rows)
+    duration     | riops | pct_scratch | coverage | job_id |         start_time         |          end_time          | num_batches | num_rows | pct_update | max_scratch | prepared | index_only | tab_rows | batch_size | table_name | table_rows | table_scratch
+-----------------+-------+-------------+----------+--------+----------------------------+----------------------------+-------------+----------+------------+-------------+----------+------------+----------+------------+------------+------------+---------------
+                 |       |             |          |   4701 | 2021-07-30 03:50:20.00427  |                            |             |          |         10 |             | t        | f          |  1000000 |        100 | bench0001  |            |
+ 00:10:00.010691 | 14300 |             |          |   4601 | 2021-07-30 03:40:19.521098 | 2021-07-30 03:50:19.531789 |      115571 |  8579921 |         10 |    10000008 | t        | f          |  1000000 |         75 | bench0001  |            |
+ 00:10:00.008916 | 13101 |             |          |   4501 | 2021-07-30 03:30:18.967942 | 2021-07-30 03:40:18.976858 |      158772 |  7860486 |         10 |    10000007 | t        | f          |  1000000 |         50 | bench0001  |            |
+ 00:10:00.018242 |  9493 |             |          |   4401 | 2021-07-30 03:20:18.242007 | 2021-07-30 03:30:18.260249 |      230157 |  5695852 |         10 |    10000005 | t        | f          |  1000000 |         25 | bench0001  |            |
+ 00:10:00.006399 |  4962 |             |          |   4301 | 2021-07-30 03:10:17.505551 | 2021-07-30 03:20:17.51195  |      300647 |  2976935 |         10 |    10000005 | t        | f          |  1000000 |         10 | bench0001  |            |
+ 00:10:00.005778 |   563 |             |          |   4201 | 2021-07-30 03:00:16.952416 | 2021-07-30 03:10:16.958194 |      341014 |   337613 |         10 |    10000003 | t        | f          |  1000000 |          1 | bench0001  |            |
+ 00:10:17.721976 | 32053 |             |          |   4101 | 2021-07-30 02:49:58.794436 | 2021-07-30 03:00:16.516412 |          20 | 19799980 |          5 |    10000005 | t        | f          |  1000000 |    1000000 | bench0001  |            |
+ 00:10:08.574929 | 34499 |             |          |   4001 | 2021-07-30 02:39:49.808119 | 2021-07-30 02:49:58.383048 |          28 | 20995158 |          5 |    10000004 | t        | f          |  1000000 |     750000 | bench0001  |            |
+ 00:10:01.014065 | 34109 |             |          |   3901 | 2021-07-30 02:29:48.396392 | 2021-07-30 02:39:49.410457 |          41 | 20500000 |          5 |    10000003 | t        | f          |  1000000 |     500000 | bench0001  |            |
+ 00:10:03.313616 | 30222 |             |          |   3801 | 2021-07-30 02:19:44.666775 | 2021-07-30 02:29:47.980391 |          73 | 18233325 |          5 |    10000001 | t        | f          |  1000000 |     250000 | bench0001  |            |
 ```
 The RIOPS here is the rows per second that were read or updated.
+
+Here is an example where I graph'd it with [Arctype](https://blog.yugabyte.com/connecting-to-yugabytedb-with-arctype-a-collaborative-sql-client/) to see the impact of the batch_size parameter on the read rate - minimizing the calls between YSQL and DocDB by reading 10's thousand of rows can reach 75000 rows per second from a single session here (and this is how we can scale thanks to SQL and PL/pgSQL): ![BatchSizeExample](https://user-images.githubusercontent.com/33070466/127613823-985956d2-5540-4d61-9486-a146c2841aae.png)
+
+# next steps
+
+The table and index creation can be customized to test different things. I plan to add tablet splitting for the index (currently, as it is a range index it has only one tablet so the workload is not distributed on all nodes for the index lookup)
