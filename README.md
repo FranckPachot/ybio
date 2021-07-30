@@ -7,9 +7,9 @@ The original PGIO can be used on YugabyteDB with a few tricks (see https://dev.t
 
 # understand
 
-It is important to understand the access path. The table created is hash-sharded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordred on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
+It is important to understand the access path. The table created is hash-sharded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordered on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
 
-The access path with the default index_ony=>false is:
+The access path with the default index_only=>false is:
 ```
 yugabyte=# explain (analyze, verbose) select count(*),sum(scratch) from bench0001 where mykey between 1 and 10;
                                                                  QUERY PLAN
@@ -53,7 +53,7 @@ yugabyte=# explain (analyze) with u as (update bench0001 set scratch=scratch+1 w
  Execution Time: 2.670 ms
 ```
 
-It can be interesting to read this post I've written when running PGIO on YDB: https://dev.to/yugabyte/slob-on-yugabytedb-1a32
+It can be interesting to read this post I've written when running PGIO on YBDB: https://dev.to/yugabyte/slob-on-yugabytedb-1a32
 
 # install
 
@@ -132,7 +132,7 @@ CALL
 ```
 
 # read results
-The run display a notice for each batch of rows but the summary is stored in the benchruns table:
+The run displays a notice for each batch of rows but the summary is stored in the benchruns table:
 ```
 opc=> select end_time-start_time duration,round(num_rows/extract(epoch from end_time-start_time)) riops
       ,round(100*max_scratch::float/table_scratch) as pct_scratch
