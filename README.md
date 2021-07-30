@@ -69,7 +69,7 @@ call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batch_size=>10000);
 ```
 will create a bench0001 table with 1 million rows, in 100 batches of 10000 rows (this si important fir YugabyteDB that is optimized for OLTP with short transactions).
 Additional parameters:
- - tablets: defines the number of YugabyteDB tablets for the table. The default 0 will use the default from the YB server
+ - tab_tablets: defines the number of YugabyteDB tablets for the table. The default 0 will use the default from the YB server
  - filler: is the size of an additional column in the rows that can be used to create larger rows
  - recreate: by defautl at true which will drop the existing tables before re-creating them
 
