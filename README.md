@@ -7,7 +7,7 @@ The original PGIO can be used on YugabyteDB with a few tricks (see https://dev.t
 
 # understand
 
-It is important to understand the access path. The table created is hash-sharded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordered on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
+It is important to understand the access path. On a distributed database, the table created is hash-sharded on a generated UUID (this is the default on YugabyteDB when we do not define a primary key). Rows are scattered without specific order (because of this hash and because they are inserted ordered on a random value). The index on the "mykey" column is created as range-sharded. The purpose is to range scan the index so that most of the work is reading scattered rows from the table.
 
 The access path with the default index_only=>false is:
 ```
@@ -67,12 +67,12 @@ example:
 ```
 call setup(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,batch_size=>10000);
 ```
-will create a bench0001 table with 1 million rows, in 100 batches of 10000 rows (this si important fir YugabyteDB that is optimized for OLTP with short transactions).
+will create a bench0001 table with 1 million rows, in 100 batches of 10000 rows (this si important for YugabyteDB that is optimized for OLTP with short transactions).
 Additional parameters:
  - tab_tablets: defines the number of YugabyteDB tablets for the table (SPLIT INTO clause). The default 0 will use the default from the YB server
  - ind_tablets: defines the number of YugabyteDB tablets for the index (SPLIT AT clause). The default 0 will use the default (one tablet).
  - filler: is the size of an additional column in the rows that can be used to create larger rows
- - recreate: by defautl at true which will drop the existing tables before re-creating them
+ - recreate: by default at true which will drop the existing tables before re-creating them
 
 You can create many tables (with a different tab_num) if you want to run multiple sessions concurrently that doesn't touch the same table.
 
@@ -101,7 +101,7 @@ example:
 ```
 call runit(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,run_duration=>interval '1 minutes',pct_update=>10,batch_size=>1e4::int);
 ```
-will run a session for one minute reading a set of 10000 rows within the first 1 million in the bech0001 table (be sure to have inserted enough with setup) and updating 10% of those rows.
+will run a session for one minute reading a set of 10000 rows within the first 1 million in the bench0001 table (be sure to have inserted enough with setup) and updating 10% of those rows.
 Additional parameters:
  - prepared defaults to true in order to use prepared statements
  - index_only defaults to false in order to read from the table (we do a range scan on the index but read rows scattered within the table)
