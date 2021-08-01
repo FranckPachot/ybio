@@ -3,7 +3,7 @@ ybio is a row-access micro-benchmarking for PostgreSQL or YugabyteDB based on ht
 
 The idea is to read rows at random within a table in order to get an homogeneous workload, and predictable measure, to test a platform (compare compute shapes, CPU, processor architecture, block storage, memory, IO path...). The parameters (number of rows, percentage of updates,... can be set to focus on the desired workload (measure CPU and memory with a scale that fits in cache, disk IOPS with larger scale, concurrent access when touching the same table from multiple sessions,...)
 
-The original PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this ybio is adapted to be run both on PostgreSQL and any PostgreSQL compatible database (like YugabyteDB https://www.yugabyte.com/) whatever the storage engine.
+The original PGIO can be used on YugabyteDB with a few tricks (see https://dev.to/yugabyte/slob-on-yugabytedb-1a32) but this ybio is adapted to be run both on PostgreSQL and any PostgreSQL compatible database (like AWS Aurora or YugabyteDB https://www.yugabyte.com/), whatever the storage engine.
 
 # understand
 
