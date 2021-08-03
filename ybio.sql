@@ -91,7 +91,7 @@ drop table if exists benchruns;
 create table benchruns(job_id serial,start_time timestamp, end_time timestamp
 ,num_batches int, num_rows bigint, pct_update int, max_scratch bigint
 , prepared boolean, index_only boolean, tab_rows int, batch_size int
-,table_name text, table_rows bigint, table_scratch bigint
+,table_name text, table_rows bigint, table_scratch bigint, comments text
 , primary key(job_id));
 
 /*
@@ -123,7 +123,8 @@ create or replace procedure runit(
    -- doesn't read more columns than the index one if index_only
    index_only boolean default false,
    -- starts by counting the rows (and verifies tab_rows)
-   initial_count boolean default false   
+   initial_count boolean default false,
+   comments text default null
 ) language plpgsql as
 $runit$ <<this>>
 declare
