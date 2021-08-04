@@ -38,6 +38,8 @@ create or replace procedure setup(
    -- split into tablets (0 means the default)
    tab_tablets int default 0,
    ind_tablets int default 0,
+   -- by default for clustered table we don't create a PK but for heap tables we can.
+   index_as_pk boolean default false,
    -- filler characters (not very useful here)
    filler int default 1,
    -- drops the table to recreate it
@@ -62,7 +64,11 @@ begin
    end loop;
    ind_split_clause:=format('%s)',ind_split_clause);
   end if;
-  execute format('create index if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
+  if index_as_pk then
+    execute format('alter table %I add constraint %I_pk_mykey primary key (mykey)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
+  else
+   execute format('create index if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
+  end if;
   -- insert rows in several passes
   raise notice 'Inserting % rows in % batches of %',tab_rows,ceil(tab_rows/batch_size),batch_size;
   clock_start= clock_timestamp();
@@ -153,7 +159,7 @@ begin
   -- start: count rows in the table (if flag for this - can take time)
   if initial_count then
    execute format('select count(*),max(scratch) from "%I"',tab_prefix||to_char(tab_num,'fm0000')) into strict out_count,out_scratch;
-   if out_rows < tab_rows then raise exception 'Cannot read % rows from a % rows table',tab_rows,out_rows; end if;
+   if out_count < tab_rows then raise exception 'Cannot read % rows from a % rows table',tab_rows,out_rows; end if;
   end if;
   if prepared then
    -- deallocate all prepared statements in case the previous run failed
