@@ -1,0 +1,2216 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="982" onload="init(evt)" viewBox="0 0 1200 982" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#f8f8f8" offset="5%" />
+		<stop stop-color="#e8e8e8" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+		search();
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) {
+				currentSearchTerm = term;
+				search();
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (currentSearchTerm === null) return;
+		var term = currentSearchTerm;
+
+		var re = new RegExp(term, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="982.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="965" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="965" > </text>
+<g id="frames">
+<g >
+<title>yb::pggate::PgDmlWrite::Prepare (1 samples, 1.52%)</title><rect x="474.8" y="373" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="477.85" y="383.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::~PgsqlWriteRequestPB (1 samples, 1.52%)</title><rect x="1082.7" y="757" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::NewInternalIterator (2 samples, 3.03%)</title><rect x="832.4" y="469" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="835.42" y="479.5" >roc..</text>
+</g>
+<g >
+<title>yb::consensus::PeerMessageQueue::NotifyObserversOfMajorityReplOpChangeTask (11 samples, 16.67%)</title><rect x="27.9" y="853" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="863.5" >yb::consensus::PeerMessag..</text>
+</g>
+<g >
+<title>__memcpy_avx_unaligned (1 samples, 1.52%)</title><rect x="528.5" y="901" width="17.9" height="15.0" fill="rgb(89,236,89)" rx="2" ry="2" />
+<text  x="531.48" y="911.5" ></text>
+</g>
+<g >
+<title>ev_invoke_pending (1 samples, 1.52%)</title><rect x="278.2" y="837" width="17.9" height="15.0" fill="rgb(88,234,88)" rx="2" ry="2" />
+<text  x="281.18" y="847.5" ></text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::Seek (2 samples, 3.03%)</title><rect x="957.6" y="661" width="35.7" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="960.58" y="671.5" >yb:..</text>
+</g>
+<g >
+<title>rcu_sched (1 samples, 1.52%)</title><rect x="600.0" y="917" width="17.9" height="15.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="603.00" y="927.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Operation::Replicated (7 samples, 10.61%)</title><rect x="27.9" y="725" width="125.1" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="735.5" >yb::tablet::Ope..</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::BytewiseComparatorImpl::Compare (1 samples, 1.52%)</title><rect x="1064.8" y="629" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1067.85" y="639.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::Cleanable@plt (1 samples, 1.52%)</title><rect x="832.4" y="405" width="17.9" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="835.42" y="415.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::SkipListRep&lt;rocksdb::SingleWriterInlineSkipList&lt;rocksdb::MemTableRep::KeyComparator const&amp;&gt; &gt;::Iterator::Seek (1 samples, 1.52%)</title><rect x="868.2" y="453" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="871.18" y="463.5" ></text>
+</g>
+<g >
+<title>rocksdb::FlushJob::Run (2 samples, 3.03%)</title><rect x="617.9" y="805" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="815.5" >roc..</text>
+</g>
+<g >
+<title>std::vector&lt;yb::pggate::BufferableOperation, std::allocator&lt;yb::pggate::BufferableOperation&gt; &gt;::~vector (1 samples, 1.52%)</title><rect x="313.9" y="181" width="17.9" height="15.0" fill="rgb(250,235,88)" rx="2" ry="2" />
+<text  x="316.94" y="191.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableIterator::Seek (4 samples, 6.06%)</title><rect x="27.9" y="581" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="30.88" y="591.5" >rocksdb:..</text>
+</g>
+<g >
+<title>ev_run (1 samples, 1.52%)</title><rect x="10.0" y="853" width="17.9" height="15.0" fill="rgb(88,234,88)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" ></text>
+</g>
+<g >
+<title>yb::client::internal::AsyncRpc::Finished (1 samples, 1.52%)</title><rect x="1082.7" y="805" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="815.5" ></text>
+</g>
+<g >
+<title>ybpgm_ProcessUtility (13 samples, 19.70%)</title><rect x="296.1" y="709" width="232.4" height="15.0" fill="rgb(216,216,255)" rx="2" ry="2" />
+<text  x="299.06" y="719.5" >ybpgm_ProcessUtility</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="773" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="783.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append (1 samples, 1.52%)</title><rect x="224.5" y="901" width="17.9" height="15.0" fill="rgb(250,235,88)" rx="2" ry="2" />
+<text  x="227.55" y="911.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::BytewiseComparatorImpl::Compare (1 samples, 1.52%)</title><rect x="135.2" y="469" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="138.15" y="479.5" ></text>
+</g>
+<g >
+<title>YBTxnDdlProcessUtility (13 samples, 19.70%)</title><rect x="296.1" y="741" width="232.4" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="299.06" y="751.5" >YBTxnDdlProcessUtility</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="853" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="863.5" ></text>
+</g>
+<g >
+<title>__memset_avx2 (1 samples, 1.52%)</title><rect x="510.6" y="389" width="17.9" height="15.0" fill="rgb(89,236,89)" rx="2" ry="2" />
+<text  x="513.61" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="853" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="863.5" ></text>
+</g>
+<g >
+<title>evsel__enable (1 samples, 1.52%)</title><rect x="260.3" y="821" width="17.9" height="15.0" fill="rgb(91,238,91)" rx="2" ry="2" />
+<text  x="263.30" y="831.5" ></text>
+</g>
+<g >
+<title>pggate_ybclient (1 samples, 1.52%)</title><rect x="278.2" y="917" width="17.9" height="15.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="281.18" y="927.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocWriteBatch::ExtendSubDocument (1 samples, 1.52%)</title><rect x="796.7" y="565" width="17.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="799.67" y="575.5" ></text>
+</g>
+<g >
+<title>ServerLoop (13 samples, 19.70%)</title><rect x="296.1" y="837" width="232.4" height="15.0" fill="rgb(83,185,240)" rx="2" ry="2" />
+<text  x="299.06" y="847.5" >ServerLoop</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="309" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="319.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::TwoLevelIterator::InitDataBlock (1 samples, 1.52%)</title><rect x="957.6" y="597" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="389" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="399.5" ></text>
+</g>
+<g >
+<title>[perf.5.4.17-2102.203.6.el7uek.x86_64] (1 samples, 1.52%)</title><rect x="260.3" y="869" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="263.30" y="879.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::PreparePgsqlWriteOperations (2 samples, 3.03%)</title><rect x="725.2" y="741" width="35.7" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="728.15" y="751.5" >yb:..</text>
+</g>
+<g >
+<title>yb::rpc::BinaryCallParser::Parse (1 samples, 1.52%)</title><rect x="10.0" y="741" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" ></text>
+</g>
+<g >
+<title>yb::ThreadPool::DispatchThread (11 samples, 16.67%)</title><rect x="27.9" y="869" width="196.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="30.88" y="879.5" >yb::ThreadPool::DispatchT..</text>
+</g>
+<g >
+<title>operator delete[] (1 samples, 1.52%)</title><rect x="170.9" y="581" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="173.91" y="591.5" ></text>
+</g>
+<g >
+<title>rocksdb::EncodeKey (1 samples, 1.52%)</title><rect x="886.1" y="453" width="17.8" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="889.06" y="463.5" ></text>
+</g>
+<g >
+<title>yb::consensus::ReplicaState::AdvanceCommittedOpIdUnlocked (11 samples, 16.67%)</title><rect x="27.9" y="805" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="815.5" >yb::consensus::ReplicaSta..</text>
+</g>
+<g >
+<title>rocksdb::InternalKeyComparator::Compare (2 samples, 3.03%)</title><rect x="921.8" y="565" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="924.82" y="575.5" >roc..</text>
+</g>
+<g >
+<title>yb::tablet::TabletPeer::WriteAsync (16 samples, 24.24%)</title><rect x="725.2" y="789" width="286.0" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="728.15" y="799.5" >yb::tablet::TabletPeer::WriteAsync</text>
+</g>
+<g >
+<title>PostgresMain (13 samples, 19.70%)</title><rect x="296.1" y="821" width="232.4" height="15.0" fill="rgb(74,176,231)" rx="2" ry="2" />
+<text  x="299.06" y="831.5" >PostgresMain</text>
+</g>
+<g >
+<title>evlist__enable (1 samples, 1.52%)</title><rect x="260.3" y="837" width="17.9" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="263.30" y="847.5" ></text>
+</g>
+<g >
+<title>google::protobuf::MessageLite::ParseFromCodedStream (1 samples, 1.52%)</title><rect x="10.0" y="677" width="17.9" height="15.0" fill="rgb(250,245,99)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="789" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="799.5" ></text>
+</g>
+<g >
+<title>yb::subtle::RefCountedThreadSafeBase::Release (1 samples, 1.52%)</title><rect x="671.5" y="821" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="674.52" y="831.5" ></text>
+</g>
+<g >
+<title>yb::rpc::Reactor::RunThread (1 samples, 1.52%)</title><rect x="278.2" y="869" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="281.18" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="293" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="303.5" ></text>
+</g>
+<g >
+<title>[libgcc_s-4.8.5-20150702.so.1] (1 samples, 1.52%)</title><rect x="1154.2" y="853" width="17.9" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="1157.24" y="863.5" ></text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::BoundedRocksDbIterator (1 samples, 1.52%)</title><rect x="993.3" y="645" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="996.33" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="741" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="751.5" ></text>
+</g>
+<g >
+<title>ExecScan (2 samples, 3.03%)</title><rect x="492.7" y="437" width="35.8" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="495.73" y="447.5" >Exe..</text>
+</g>
+<g >
+<title>yb::docdb::(anonymous namespace)::ConflictResolver::InvokeCallback (8 samples, 12.12%)</title><rect x="760.9" y="677" width="143.0" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="763.91" y="687.5" >yb::docdb::(anonym..</text>
+</g>
+<g >
+<title>yb::PgsqlExpressionPB::~PgsqlExpressionPB (1 samples, 1.52%)</title><rect x="188.8" y="581" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="191.79" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="677" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="687.5" >[[k..</text>
+</g>
+<g >
+<title>ExecResult (2 samples, 3.03%)</title><rect x="492.7" y="421" width="35.8" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="495.73" y="431.5" >Exe..</text>
+</g>
+<g >
+<title>rocksdb::BuildTable (2 samples, 3.03%)</title><rect x="617.9" y="773" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="783.5" >roc..</text>
+</g>
+<g >
+<title>yb::tablet::DocWriteOperation::DoComplete (8 samples, 12.12%)</title><rect x="760.9" y="645" width="143.0" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="763.91" y="655.5" >yb::tablet::DocWri..</text>
+</g>
+<g >
+<title>[runcommand] (1 samples, 1.52%)</title><rect x="1100.6" y="885" width="17.9" height="15.0" fill="rgb(95,241,95)" rx="2" ry="2" />
+<text  x="1103.61" y="895.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::SharedDtor (1 samples, 1.52%)</title><rect x="1082.7" y="725" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="735.5" ></text>
+</g>
+<g >
+<title>yb::tablet::DocWriteOperation::DoStart (14 samples, 21.21%)</title><rect x="760.9" y="725" width="250.3" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="763.91" y="735.5" >yb::tablet::DocWriteOperation::Do..</text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::Seek (2 samples, 3.03%)</title><rect x="868.2" y="501" width="35.7" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="871.18" y="511.5" >yb:..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::MaxPersistentOpId (1 samples, 1.52%)</title><rect x="242.4" y="789" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="799.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::KeyValueBatchFromPgsqlWriteBatch (16 samples, 24.24%)</title><rect x="725.2" y="757" width="286.0" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="728.15" y="767.5" >yb::tablet::Tablet::KeyValueBatchFromP..</text>
+</g>
+<g >
+<title>yb::pggate::PgTableDesc::PgTableDesc (1 samples, 1.52%)</title><rect x="474.8" y="341" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="477.85" y="351.5" ></text>
+</g>
+<g >
+<title>yb::client::internal::WriteRpc::~WriteRpc (1 samples, 1.52%)</title><rect x="1082.7" y="789" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="799.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocKey::Encode (1 samples, 1.52%)</title><rect x="367.6" y="85" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="370.58" y="95.5" ></text>
+</g>
+<g >
+<title>ExecModifyTable (13 samples, 19.70%)</title><rect x="296.1" y="453" width="232.4" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="299.06" y="463.5" >ExecModifyTable</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::GetEntryFromCache (1 samples, 1.52%)</title><rect x="993.3" y="549" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="559.5" ></text>
+</g>
+<g >
+<title>tcmalloc::ThreadCache::FetchFromCentralCache (1 samples, 1.52%)</title><rect x="778.8" y="581" width="17.9" height="15.0" fill="rgb(250,242,96)" rx="2" ry="2" />
+<text  x="781.79" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="645" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="655.5" ></text>
+</g>
+<g >
+<title>__fopen_internal (1 samples, 1.52%)</title><rect x="1172.1" y="885" width="17.9" height="15.0" fill="rgb(85,232,85)" rx="2" ry="2" />
+<text  x="1175.12" y="895.5" ></text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (3 samples, 4.55%)</title><rect x="546.4" y="885" width="53.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="549.36" y="895.5" >yb::T..</text>
+</g>
+<g >
+<title>yb::client::internal::Batcher::DoAdd (2 samples, 3.03%)</title><rect x="349.7" y="117" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="352.70" y="127.5" >yb:..</text>
+</g>
+<g >
+<title>yb::docdb::DocKey::AppendTo (1 samples, 1.52%)</title><rect x="367.6" y="69" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="370.58" y="79.5" ></text>
+</g>
+<g >
+<title>yb::consensus::ReplicaState::ApplyPendingOperationsUnlocked (11 samples, 16.67%)</title><rect x="27.9" y="789" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="799.5" >yb::consensus::ReplicaSta..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="206.7" y="581" width="17.8" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="209.67" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="437" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="447.5" ></text>
+</g>
+<g >
+<title>yb::tablet::UpdateTxnOperation::DoReplicated (4 samples, 6.06%)</title><rect x="27.9" y="709" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="719.5" >yb::tabl..</text>
+</g>
+<g >
+<title>rocksdb::CompactionIterator::Next (2 samples, 3.03%)</title><rect x="564.2" y="757" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="567.24" y="767.5" >roc..</text>
+</g>
+<g >
+<title>YBCExecuteInsertInternal (3 samples, 4.55%)</title><rect x="439.1" y="421" width="53.6" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="442.09" y="431.5" >YBCEx..</text>
+</g>
+<g >
+<title>pgss_ProcessUtility (13 samples, 19.70%)</title><rect x="296.1" y="693" width="232.4" height="15.0" fill="rgb(216,216,255)" rx="2" ry="2" />
+<text  x="299.06" y="703.5" >pgss_ProcessUtility</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="757" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="837" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="847.5" ></text>
+</g>
+<g >
+<title>yb::rpc::YBInboundCall::ParseParam (2 samples, 3.03%)</title><rect x="689.4" y="789" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="692.39" y="799.5" >yb:..</text>
+</g>
+<g >
+<title>yb::tablet::OperationDriver::ApplyTask (11 samples, 16.67%)</title><rect x="27.9" y="741" width="196.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="751.5" >yb::tablet::OperationDriv..</text>
+</g>
+<g >
+<title>ExecInsertIndexTuples (7 samples, 10.61%)</title><rect x="313.9" y="421" width="125.2" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="316.94" y="431.5" >ExecInsertIndex..</text>
+</g>
+<g >
+<title>std::vector&lt;yb::docdb::PrimitiveValue, std::allocator&lt;yb::docdb::PrimitiveValue&gt; &gt;::vector (1 samples, 1.52%)</title><rect x="743.0" y="709" width="17.9" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="746.03" y="719.5" ></text>
+</g>
+<g >
+<title>yb::tserver::TabletServiceImpl::Write (16 samples, 24.24%)</title><rect x="725.2" y="805" width="286.0" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="728.15" y="815.5" >yb::tserver::TabletServiceImpl::Write</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="725" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="735.5" >[[k..</text>
+</g>
+<g >
+<title>main (13 samples, 19.70%)</title><rect x="296.1" y="885" width="232.4" height="15.0" fill="rgb(40,142,197)" rx="2" ry="2" />
+<text  x="299.06" y="895.5" >main</text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (3 samples, 4.55%)</title><rect x="1029.1" y="661" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1032.09" y="671.5" >rocks..</text>
+</g>
+<g >
+<title>yb::docdb::PgsqlWriteOperation::Init (1 samples, 1.52%)</title><rect x="743.0" y="725" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="746.03" y="735.5" ></text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (11 samples, 16.67%)</title><rect x="27.9" y="885" width="196.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="30.88" y="895.5" >yb::Thread::SuperviseThread</text>
+</g>
+<g >
+<title>yb::client::internal::Batcher::FlushAsync (1 samples, 1.52%)</title><rect x="331.8" y="117" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="127.5" ></text>
+</g>
+<g >
+<title>yb::tablet::MaxPersistentOpIdForDb (1 samples, 1.52%)</title><rect x="242.4" y="773" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="783.5" ></text>
+</g>
+<g >
+<title>tcmalloc::ThreadCache::ListTooLong (1 samples, 1.52%)</title><rect x="153.0" y="645" width="17.9" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="156.03" y="655.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableIterator::Seek (2 samples, 3.03%)</title><rect x="921.8" y="613" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="924.82" y="623.5" >roc..</text>
+</g>
+<g >
+<title>yb::pggate::PgSession::RunHelper::Apply (4 samples, 6.06%)</title><rect x="313.9" y="245" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="255.5" >yb::pgga..</text>
+</g>
+<g >
+<title>yb::rpc::serialization::ParseYBMessage (1 samples, 1.52%)</title><rect x="10.0" y="693" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::WriteToRocksDB (3 samples, 4.55%)</title><rect x="99.4" y="645" width="53.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="102.39" y="655.5" >yb::t..</text>
+</g>
+<g >
+<title>standard_ExecutorRun (13 samples, 19.70%)</title><rect x="296.1" y="469" width="232.4" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="299.06" y="479.5" >standard_ExecutorRun</text>
+</g>
+<g >
+<title>top (2 samples, 3.03%)</title><rect x="1154.2" y="917" width="35.8" height="15.0" fill="rgb(92,239,92)" rx="2" ry="2" />
+<text  x="1157.24" y="927.5" >top</text>
+</g>
+<g >
+<title>google::protobuf::Message::SpaceUsedLong (1 samples, 1.52%)</title><rect x="707.3" y="757" width="17.9" height="15.0" fill="rgb(250,245,99)" rx="2" ry="2" />
+<text  x="710.27" y="767.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgDocOp::Execute (4 samples, 6.06%)</title><rect x="313.9" y="293" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="303.5" >yb::pgga..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="789" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="799.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::AcquireLocksAndPerformDocOperations (16 samples, 24.24%)</title><rect x="725.2" y="773" width="286.0" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="728.15" y="783.5" >yb::tablet::Tablet::AcquireLocksAndPer..</text>
+</g>
+<g >
+<title>yb::docdb::CreateRocksDBIterator (1 samples, 1.52%)</title><rect x="993.3" y="661" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="996.33" y="671.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="757" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="767.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::block_based_table::ReadBlockFromFile (1 samples, 1.52%)</title><rect x="957.6" y="565" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="575.5" ></text>
+</g>
+<g >
+<title>operator new[] (1 samples, 1.52%)</title><rect x="760.9" y="581" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="763.91" y="591.5" ></text>
+</g>
+<g >
+<title>start_thread (1 samples, 1.52%)</title><rect x="278.2" y="901" width="17.9" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="281.18" y="911.5" ></text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::Seek (2 samples, 3.03%)</title><rect x="921.8" y="645" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="924.82" y="655.5" >yb:..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::StartDocWriteOperation (14 samples, 21.21%)</title><rect x="760.9" y="741" width="250.3" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="763.91" y="751.5" >yb::tablet::Tablet::StartDocWrite..</text>
+</g>
+<g >
+<title>rocksdb::ReadBlockContents (1 samples, 1.52%)</title><rect x="957.6" y="549" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="559.5" ></text>
+</g>
+<g >
+<title>ev_run (1 samples, 1.52%)</title><rect x="278.2" y="853" width="17.9" height="15.0" fill="rgb(88,234,88)" rx="2" ry="2" />
+<text  x="281.18" y="863.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::NewIterator (2 samples, 3.03%)</title><rect x="832.4" y="485" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="835.42" y="495.5" >roc..</text>
+</g>
+<g >
+<title>yb::pggate::PgDmlWrite::Prepare (3 samples, 4.55%)</title><rect x="385.5" y="309" width="53.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="388.45" y="319.5" >yb::p..</text>
+</g>
+<g >
+<title>yb::tablet::TabletPeer::GetEarliestNeededLogIndex (1 samples, 1.52%)</title><rect x="242.4" y="805" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="815.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::~PgsqlWriteRequestPB (1 samples, 1.52%)</title><rect x="1082.7" y="741" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="421" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="821" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="831.5" ></text>
+</g>
+<g >
+<title>yb::docdb::PrimitiveValue::AppendToKey (1 samples, 1.52%)</title><rect x="367.6" y="53" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="370.58" y="63.5" ></text>
+</g>
+<g >
+<title>yb::MaintenanceManager::FindBestOp (1 samples, 1.52%)</title><rect x="242.4" y="853" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="863.5" ></text>
+</g>
+<g >
+<title>yb::tablet::TabletPeer::GetGCableDataSize (1 samples, 1.52%)</title><rect x="242.4" y="821" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="831.5" ></text>
+</g>
+<g >
+<title>__memcpy_avx_unaligned (1 samples, 1.52%)</title><rect x="814.5" y="533" width="17.9" height="15.0" fill="rgb(89,236,89)" rx="2" ry="2" />
+<text  x="817.55" y="543.5" ></text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTable::GetFilter (1 samples, 1.52%)</title><rect x="993.3" y="565" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="575.5" ></text>
+</g>
+<g >
+<title>rocksdb::CompactionJob::ProcessKeyValueCompaction (3 samples, 4.55%)</title><rect x="546.4" y="773" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="783.5" >rocks..</text>
+</g>
+<g >
+<title>yb::rpc::RpcContext::~RpcContext (3 samples, 4.55%)</title><rect x="153.0" y="661" width="53.7" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="156.03" y="671.5" >yb::r..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="741" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="751.5" ></text>
+</g>
+<g >
+<title>standard_ProcessUtility (13 samples, 19.70%)</title><rect x="296.1" y="661" width="232.4" height="15.0" fill="rgb(74,176,231)" rx="2" ry="2" />
+<text  x="299.06" y="671.5" >standard_ProcessUtility</text>
+</g>
+<g >
+<title>ybcininsert (7 samples, 10.61%)</title><rect x="313.9" y="389" width="125.2" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="316.94" y="399.5" >ybcininsert</text>
+</g>
+<g >
+<title>std::_Sp_counted_base&lt; (3 samples, 4.55%)</title><rect x="153.0" y="677" width="53.7" height="15.0" fill="rgb(250,235,88)" rx="2" ry="2" />
+<text  x="156.03" y="687.5" >std::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="773" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="783.5" ></text>
+</g>
+<g >
+<title>yb::tserver::TabletServerServiceIf::Handle (18 samples, 27.27%)</title><rect x="689.4" y="821" width="321.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="692.39" y="831.5" >yb::tserver::TabletServerServiceIf::Handle</text>
+</g>
+<g >
+<title>YBCPgDmlExecWriteOp (4 samples, 6.06%)</title><rect x="313.9" y="341" width="71.6" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="316.94" y="351.5" >YBCPgDml..</text>
+</g>
+<g >
+<title>[unknown] (2 samples, 3.03%)</title><rect x="1154.2" y="901" width="35.8" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="1157.24" y="911.5" >[un..</text>
+</g>
+<g >
+<title>rocksdb::DBIter::Seek (2 samples, 3.03%)</title><rect x="957.6" y="645" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="655.5" >roc..</text>
+</g>
+<g >
+<title>rpc_tp_pggate_y (1 samples, 1.52%)</title><rect x="1082.7" y="917" width="17.9" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="1085.73" y="927.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::~PgsqlWriteRequestPB (2 samples, 3.03%)</title><rect x="170.9" y="613" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="173.91" y="623.5" >yb:..</text>
+</g>
+<g >
+<title>rocksdb::MemTableIterator::Seek (2 samples, 3.03%)</title><rect x="868.2" y="469" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="871.18" y="479.5" >roc..</text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::Seek (4 samples, 6.06%)</title><rect x="27.9" y="613" width="71.5" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="623.5" >yb::docd..</text>
+</g>
+<g >
+<title>rocksdb::Version::AddIterators (2 samples, 3.03%)</title><rect x="832.4" y="453" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="835.42" y="463.5" >roc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="709" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="719.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::TwoLevelIterator::Seek (1 samples, 1.52%)</title><rect x="957.6" y="613" width="17.9" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="960.58" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="613" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="837" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="847.5" ></text>
+</g>
+<g >
+<title>[runcommand] (1 samples, 1.52%)</title><rect x="1100.6" y="901" width="17.9" height="15.0" fill="rgb(95,241,95)" rx="2" ry="2" />
+<text  x="1103.61" y="911.5" ></text>
+</g>
+<g >
+<title>operator new[] (1 samples, 1.52%)</title><rect x="403.3" y="277" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="406.33" y="287.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgApiImpl::DmlExecWriteOp (4 samples, 6.06%)</title><rect x="313.9" y="325" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="335.5" >yb::pgga..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::WriteImpl (4 samples, 6.06%)</title><rect x="1011.2" y="757" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="767.5" >rocksdb:..</text>
+</g>
+<g >
+<title>rocksdb::DBIter::Seek (2 samples, 3.03%)</title><rect x="868.2" y="485" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="871.18" y="495.5" >roc..</text>
+</g>
+<g >
+<title>TabletServer_re (1 samples, 1.52%)</title><rect x="10.0" y="917" width="17.9" height="15.0" fill="rgb(88,234,88)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" ></text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTable::NonBlockBasedFilterKeyMayMatch (1 samples, 1.52%)</title><rect x="850.3" y="421" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="853.30" y="431.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (4 samples, 6.06%)</title><rect x="27.9" y="549" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="30.88" y="559.5" >rocksdb:..</text>
+</g>
+<g >
+<title>yb::tablet::OperationDriver::ReplicationFinished (11 samples, 16.67%)</title><rect x="27.9" y="757" width="196.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="767.5" >yb::tablet::OperationDriv..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="693" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="703.5" ></text>
+</g>
+<g >
+<title>yb::tablet::TransactionParticipant::Impl::ProcessApply (4 samples, 6.06%)</title><rect x="27.9" y="677" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="687.5" >yb::tabl..</text>
+</g>
+<g >
+<title>yb::tablet::LogGCOp::UpdateStats (1 samples, 1.52%)</title><rect x="242.4" y="837" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::WriteBatch::Iterate (3 samples, 4.55%)</title><rect x="99.4" y="581" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="591.5" >rocks..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="805" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="815.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::BackgroundFlush (2 samples, 3.03%)</title><rect x="617.9" y="837" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="847.5" >roc..</text>
+</g>
+<g >
+<title>yb::PartitionSchema::EncodeKey (1 samples, 1.52%)</title><rect x="457.0" y="341" width="17.8" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="459.97" y="351.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (1 samples, 1.52%)</title><rect x="868.2" y="437" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="871.18" y="447.5" ></text>
+</g>
+<g >
+<title>yb::client::internal::Batcher::Add (2 samples, 3.03%)</title><rect x="349.7" y="133" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="352.70" y="143.5" >yb:..</text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTable::NewDataBlockIterator (1 samples, 1.52%)</title><rect x="957.6" y="581" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="591.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlExpressionPB::clear_expr (1 samples, 1.52%)</title><rect x="188.8" y="565" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="191.79" y="575.5" ></text>
+</g>
+<g >
+<title>rocksdb::SkipListBase&lt;char const*, rocksdb::MemTableRep::KeyComparator const&amp;, rocksdb::SingleWriterInlineSkipListNode&gt;::Erase (4 samples, 6.06%)</title><rect x="1011.2" y="677" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="687.5" >rocksdb:..</text>
+</g>
+<g >
+<title>__libc_start_main (13 samples, 19.70%)</title><rect x="296.1" y="901" width="232.4" height="15.0" fill="rgb(90,236,90)" rx="2" ry="2" />
+<text  x="299.06" y="911.5" >__libc_start_main</text>
+</g>
+<g >
+<title>__GI___ioctl (1 samples, 1.52%)</title><rect x="260.3" y="789" width="17.9" height="15.0" fill="rgb(81,228,81)" rx="2" ry="2" />
+<text  x="263.30" y="799.5" ></text>
+</g>
+<g >
+<title>plpgsql_call_handler (13 samples, 19.70%)</title><rect x="296.1" y="629" width="232.4" height="15.0" fill="rgb(42,144,199)" rx="2" ry="2" />
+<text  x="299.06" y="639.5" >plpgsql_call_handler</text>
+</g>
+<g >
+<title>all (66 samples, 100%)</title><rect x="10.0" y="933" width="1180.0" height="15.0" fill="rgb(110,255,110)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBIter::Seek (4 samples, 6.06%)</title><rect x="27.9" y="597" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="30.88" y="607.5" >rocksdb:..</text>
+</g>
+<g >
+<title>exec_stmts (13 samples, 19.70%)</title><rect x="296.1" y="565" width="232.4" height="15.0" fill="rgb(42,144,199)" rx="2" ry="2" />
+<text  x="299.06" y="575.5" >exec_stmts</text>
+</g>
+<g >
+<title>start_thread (11 samples, 16.67%)</title><rect x="27.9" y="901" width="196.6" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="30.88" y="911.5" >start_thread</text>
+</g>
+<g >
+<title>plpgsql_exec_function (13 samples, 19.70%)</title><rect x="296.1" y="613" width="232.4" height="15.0" fill="rgb(42,144,199)" rx="2" ry="2" />
+<text  x="299.06" y="623.5" >plpgsql_exec_function</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::BytewiseComparatorImpl::Compare (1 samples, 1.52%)</title><rect x="939.7" y="549" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="942.70" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="245" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="255.5" ></text>
+</g>
+<g >
+<title>operator new[] (1 samples, 1.52%)</title><rect x="725.2" y="725" width="17.8" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="728.15" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="469" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="479.5" ></text>
+</g>
+<g >
+<title>rocksdb::BloomFilterAwareFileFilter::Filter (1 samples, 1.52%)</title><rect x="993.3" y="581" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="591.5" ></text>
+</g>
+<g >
+<title>tcmalloc::DLL_Remove (1 samples, 1.52%)</title><rect x="778.8" y="533" width="17.9" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="781.79" y="543.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgApiImpl::NewInsert (3 samples, 4.55%)</title><rect x="385.5" y="325" width="53.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="388.45" y="335.5" >yb::p..</text>
+</g>
+<g >
+<title>yb::consensus::ReplicaState::NotifyReplicationFinishedUnlocked (11 samples, 16.67%)</title><rect x="27.9" y="773" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="783.5" >yb::consensus::ReplicaSta..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="661" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="671.5" ></text>
+</g>
+<g >
+<title>rocksdb::InternalKeyComparator::Compare (1 samples, 1.52%)</title><rect x="135.2" y="485" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="138.15" y="495.5" ></text>
+</g>
+<g >
+<title>ev_invoke_pending (1 samples, 1.52%)</title><rect x="10.0" y="837" width="17.9" height="15.0" fill="rgb(88,234,88)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="213" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::MemTableInserter::PutCF (3 samples, 4.55%)</title><rect x="99.4" y="565" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="575.5" >rocks..</text>
+</g>
+<g >
+<title>google::protobuf::internal::ArenaStringPtr::CreateInstanceNoArena (2 samples, 3.03%)</title><rect x="760.9" y="597" width="35.8" height="15.0" fill="rgb(250,245,99)" rx="2" ry="2" />
+<text  x="763.91" y="607.5" >goo..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="188.8" y="533" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="191.79" y="543.5" ></text>
+</g>
+<g >
+<title>swapper (2 samples, 3.03%)</title><rect x="1118.5" y="917" width="35.7" height="15.0" fill="rgb(222,222,222)" rx="2" ry="2" />
+<text  x="1121.48" y="927.5" >swa..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="741" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="751.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::StatisticsMetricImpl::recordTick (1 samples, 1.52%)</title><rect x="993.3" y="533" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="543.5" ></text>
+</g>
+<g >
+<title>yb::client::internal::Batcher::FlushBuffersIfReady (1 samples, 1.52%)</title><rect x="331.8" y="101" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="111.5" ></text>
+</g>
+<g >
+<title>SPI_execute (13 samples, 19.70%)</title><rect x="296.1" y="533" width="232.4" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="299.06" y="543.5" >SPI_execute</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="188.8" y="549" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="191.79" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="565" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="575.5" ></text>
+</g>
+<g >
+<title>start_thread (3 samples, 4.55%)</title><rect x="546.4" y="901" width="53.6" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="549.36" y="911.5" >start..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::ApplyIntents (4 samples, 6.06%)</title><rect x="27.9" y="661" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="671.5" >yb::tabl..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Write (4 samples, 6.06%)</title><rect x="1011.2" y="773" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="783.5" >rocksdb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="885" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="895.5" ></text>
+</g>
+<g >
+<title>yb::tserver::WriteRequestPB::MergePartialFromCodedStream (1 samples, 1.52%)</title><rect x="689.4" y="757" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="692.39" y="767.5" ></text>
+</g>
+<g >
+<title>PortalRunUtility (13 samples, 19.70%)</title><rect x="296.1" y="757" width="232.4" height="15.0" fill="rgb(74,176,231)" rx="2" ry="2" />
+<text  x="299.06" y="767.5" >PortalRunUtility</text>
+</g>
+<g >
+<title>YBCExecuteInsertIndex (7 samples, 10.61%)</title><rect x="313.9" y="373" width="125.2" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="316.94" y="383.5" >YBCExecuteInser..</text>
+</g>
+<g >
+<title>yb::docdb::CreateIntentAwareIterator (2 samples, 3.03%)</title><rect x="832.4" y="533" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="835.42" y="543.5" >yb:..</text>
+</g>
+<g >
+<title>yb::MaintenanceManager::RunSchedulerThread (1 samples, 1.52%)</title><rect x="242.4" y="869" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="879.5" ></text>
+</g>
+<g >
+<title>yb::client::(anonymous namespace)::FlushBatcherAsync (1 samples, 1.52%)</title><rect x="331.8" y="133" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="143.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="405" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="415.5" ></text>
+</g>
+<g >
+<title>yb::docdb::ResolveTransactionConflicts (14 samples, 21.21%)</title><rect x="760.9" y="709" width="250.3" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="763.91" y="719.5" >yb::docdb::ResolveTransactionConf..</text>
+</g>
+<g >
+<title>yb::docdb::PrimitiveValue::PrimitiveValue (1 samples, 1.52%)</title><rect x="796.7" y="549" width="17.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="799.67" y="559.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::SkipListRep&lt;rocksdb::SingleWriterInlineSkipList&lt;rocksdb::MemTableRep::KeyComparator const&amp;&gt; &gt;::Iterator::Seek (2 samples, 3.03%)</title><rect x="921.8" y="597" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="924.82" y="607.5" >roc..</text>
+</g>
+<g >
+<title>rocksdb::CompactionIterator::NextFromInput (2 samples, 3.03%)</title><rect x="564.2" y="741" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="567.24" y="751.5" >roc..</text>
+</g>
+<g >
+<title>yb::docdb::PgsqlWriteOperation::ReadColumns (5 samples, 7.58%)</title><rect x="814.5" y="581" width="89.4" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="817.55" y="591.5" >yb::docdb:..</text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::~PgsqlWriteRequestPB (1 samples, 1.52%)</title><rect x="206.7" y="661" width="17.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="209.67" y="671.5" ></text>
+</g>
+<g >
+<title>yb_exec_simple_query (13 samples, 19.70%)</title><rect x="296.1" y="805" width="232.4" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="299.06" y="815.5" >yb_exec_simple_query</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::SkipListRep&lt;rocksdb::SingleWriterInlineSkipList&lt;rocksdb::MemTableRep::KeyComparator const&amp;&gt; &gt;::Iterator::Seek (4 samples, 6.06%)</title><rect x="27.9" y="565" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="30.88" y="575.5" >rocksdb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="805" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="815.5" ></text>
+</g>
+<g >
+<title>rpc_tp_TabletSe (24 samples, 36.36%)</title><rect x="653.6" y="917" width="429.1" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="656.64" y="927.5" >rpc_tp_TabletSe</text>
+</g>
+<g >
+<title>tcmalloc::CentralFreeList::RemoveRange (1 samples, 1.52%)</title><rect x="778.8" y="565" width="17.9" height="15.0" fill="rgb(250,242,96)" rx="2" ry="2" />
+<text  x="781.79" y="575.5" ></text>
+</g>
+<g >
+<title>google::protobuf::io::CodedInputStream::ReadTagFallback (1 samples, 1.52%)</title><rect x="10.0" y="645" width="17.9" height="15.0" fill="rgb(99,245,99)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::BytewiseComparatorImpl::Compare (1 samples, 1.52%)</title><rect x="81.5" y="517" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="84.52" y="527.5" ></text>
+</g>
+<g >
+<title>[runcommand] (1 samples, 1.52%)</title><rect x="1100.6" y="869" width="17.9" height="15.0" fill="rgb(95,241,95)" rx="2" ry="2" />
+<text  x="1103.61" y="879.5" ></text>
+</g>
+<g >
+<title>yb::rpc::Reactor::TimerHandler (1 samples, 1.52%)</title><rect x="278.2" y="821" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="281.18" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="757" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="821" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="831.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocDBCompactionFilter::DoFilter (2 samples, 3.03%)</title><rect x="564.2" y="709" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="567.24" y="719.5" >yb:..</text>
+</g>
+<g >
+<title>yb::docdb::SubDocKey::DecodeDocKeyAndSubKeyEnds (1 samples, 1.52%)</title><rect x="582.1" y="693" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="585.12" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="261" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="206.7" y="629" width="17.8" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="209.67" y="639.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgApiImpl::ProcessYBTupleId (2 samples, 3.03%)</title><rect x="439.1" y="357" width="35.7" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="442.09" y="367.5" >yb:..</text>
+</g>
+<g >
+<title>operator delete[] (1 samples, 1.52%)</title><rect x="617.9" y="757" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="620.88" y="767.5" ></text>
+</g>
+<g >
+<title>yb::rpc::TcpStream::Handler (1 samples, 1.52%)</title><rect x="10.0" y="821" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" ></text>
+</g>
+<g >
+<title>yb::client::YBPgsqlWriteOp::GetPartitionKey (2 samples, 3.03%)</title><rect x="349.7" y="101" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="352.70" y="111.5" >yb:..</text>
+</g>
+<g >
+<title>yb::docdb::PgsqlWriteOperation::ApplyInsert (6 samples, 9.09%)</title><rect x="796.7" y="597" width="107.2" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="799.67" y="607.5" >yb::docdb::Pg..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="597" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="607.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgSession::FlushOperations (3 samples, 4.55%)</title><rect x="331.8" y="181" width="53.7" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="191.5" >yb::p..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="821" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="831.5" >[[k..</text>
+</g>
+<g >
+<title>yb::docdb::IntentAwareIterator::IntentAwareIterator (2 samples, 3.03%)</title><rect x="832.4" y="517" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="835.42" y="527.5" >yb:..</text>
+</g>
+<g >
+<title>rocksdb::SkipListBase&lt;char const*, rocksdb::MemTableRep::KeyComparator const&amp;, rocksdb::SingleWriterInlineSkipListNode&gt;::PrepareInsert (3 samples, 4.55%)</title><rect x="99.4" y="517" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="527.5" >rocks..</text>
+</g>
+<g >
+<title>PostgresServerProcessMain (13 samples, 19.70%)</title><rect x="296.1" y="869" width="232.4" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="299.06" y="879.5" >PostgresServerProcessMain</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="773" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="783.5" >[[k..</text>
+</g>
+<g >
+<title>_SPI_execute_plan (13 samples, 19.70%)</title><rect x="296.1" y="517" width="232.4" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="299.06" y="527.5" >_SPI_execute_plan</text>
+</g>
+<g >
+<title>yb::rpc::TcpStream::ReadHandler (1 samples, 1.52%)</title><rect x="10.0" y="805" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" ></text>
+</g>
+<g >
+<title>yb::consensus::ReplicaState::UpdateMajorityReplicatedUnlocked (11 samples, 16.67%)</title><rect x="27.9" y="821" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="831.5" >yb::consensus::ReplicaSta..</text>
+</g>
+<g >
+<title>YBCPgNewInsert (1 samples, 1.52%)</title><rect x="474.8" y="405" width="17.9" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="477.85" y="415.5" ></text>
+</g>
+<g >
+<title>rocksdb::WriteBatch::Iterate (4 samples, 6.06%)</title><rect x="1011.2" y="725" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="735.5" >rocksdb:..</text>
+</g>
+<g >
+<title>rocksdb::MemTableIterator::Seek (1 samples, 1.52%)</title><rect x="975.5" y="613" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="978.45" y="623.5" ></text>
+</g>
+<g >
+<title>perf.5.4.17-210 (1 samples, 1.52%)</title><rect x="260.3" y="917" width="17.9" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="263.30" y="927.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgSession::FlushBufferedOperations (4 samples, 6.06%)</title><rect x="313.9" y="229" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="239.5" >yb::pgga..</text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTable::GetFilter (1 samples, 1.52%)</title><rect x="832.4" y="421" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="835.42" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="453" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="463.5" ></text>
+</g>
+<g >
+<title>yb::docdb::IntentAwareIterator::Seek (2 samples, 3.03%)</title><rect x="868.2" y="533" width="35.7" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="871.18" y="543.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="901" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="911.5" ></text>
+</g>
+<g >
+<title>yb::docdb::ExecuteDocWriteOperation (8 samples, 12.12%)</title><rect x="760.9" y="629" width="143.0" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="763.91" y="639.5" >yb::docdb::Execute..</text>
+</g>
+<g >
+<title>yb::tablet::WriteOperation::~WriteOperation (1 samples, 1.52%)</title><rect x="206.7" y="693" width="17.8" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="209.67" y="703.5" ></text>
+</g>
+<g >
+<title>yb::docdb::(anonymous namespace)::ConflictResolver::ReadIntentConflicts (2 samples, 3.03%)</title><rect x="921.8" y="661" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="924.82" y="671.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="741" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="751.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadPool::BGThread (2 samples, 3.03%)</title><rect x="617.9" y="869" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="879.5" >roc..</text>
+</g>
+<g >
+<title>operator delete[] (1 samples, 1.52%)</title><rect x="457.0" y="325" width="17.8" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="459.97" y="335.5" ></text>
+</g>
+<g >
+<title>exec_stmt_block (13 samples, 19.70%)</title><rect x="296.1" y="597" width="232.4" height="15.0" fill="rgb(42,144,199)" rx="2" ry="2" />
+<text  x="299.06" y="607.5" >exec_stmt_block</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::WriteImpl (3 samples, 4.55%)</title><rect x="99.4" y="613" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="623.5" >rocks..</text>
+</g>
+<g >
+<title>yb::rpc::InboundCall::InboundCallTask::Run (20 samples, 30.30%)</title><rect x="653.6" y="853" width="357.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="656.64" y="863.5" >yb::rpc::InboundCall::InboundCallTask::Run</text>
+</g>
+<g >
+<title>__GI___libc_read (1 samples, 1.52%)</title><rect x="439.1" y="341" width="17.9" height="15.0" fill="rgb(81,228,81)" rx="2" ry="2" />
+<text  x="442.09" y="351.5" ></text>
+</g>
+<g >
+<title>_ZNSt17_Function_handlerIFN2yb6StatusESt6vectorINS0_6pggate19BufferableOperationESaIS4_EENS0_17StronglyTypedBoolINS3_26IsTransactionalSession_TagEEEEZNS3_9PgSession23FlushBufferedOperationsEvEUlT_T0_E_E9_M_invokeERKSt9_Any_dataOS6_OS9_ (4 samples, 6.06%)</title><rect x="313.9" y="197" width="71.6" height="15.0" fill="rgb(91,238,91)" rx="2" ry="2" />
+<text  x="316.94" y="207.5" >_ZNSt17_..</text>
+</g>
+<g >
+<title>__libc_start_main (1 samples, 1.52%)</title><rect x="260.3" y="901" width="17.9" height="15.0" fill="rgb(90,236,90)" rx="2" ry="2" />
+<text  x="263.30" y="911.5" ></text>
+</g>
+<g >
+<title>ExecInterpExpr (1 samples, 1.52%)</title><rect x="492.7" y="405" width="17.9" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="495.73" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="341" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="351.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="693" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="703.5" ></text>
+</g>
+<g >
+<title>YBCGetYBTupleIdFromTuple (2 samples, 3.03%)</title><rect x="439.1" y="405" width="35.7" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="442.09" y="415.5" >YBC..</text>
+</g>
+<g >
+<title>ybpgm_ExecutorRun (13 samples, 19.70%)</title><rect x="296.1" y="501" width="232.4" height="15.0" fill="rgb(216,216,255)" rx="2" ry="2" />
+<text  x="299.06" y="511.5" >ybpgm_ExecutorRun</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Write (3 samples, 4.55%)</title><rect x="99.4" y="629" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="639.5" >rocks..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="677" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="687.5" ></text>
+</g>
+<g >
+<title>rocksdb::NotifyCollectTableCollectorsOnAdd (1 samples, 1.52%)</title><rect x="635.8" y="741" width="17.8" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="638.76" y="751.5" ></text>
+</g>
+<g >
+<title>pg_hint_plan_ProcessUtility (13 samples, 19.70%)</title><rect x="296.1" y="725" width="232.4" height="15.0" fill="rgb(216,216,255)" rx="2" ry="2" />
+<text  x="299.06" y="735.5" >pg_hint_plan_ProcessUtility</text>
+</g>
+<g >
+<title>yb::client::YBSession::FlushAsync (1 samples, 1.52%)</title><rect x="331.8" y="149" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="159.5" ></text>
+</g>
+<g >
+<title>__run_exit_handlers (1 samples, 1.52%)</title><rect x="1154.2" y="869" width="17.9" height="15.0" fill="rgb(85,232,85)" rx="2" ry="2" />
+<text  x="1157.24" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="709" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="719.5" >[[k..</text>
+</g>
+<g >
+<title>exec_stmts (13 samples, 19.70%)</title><rect x="296.1" y="581" width="232.4" height="15.0" fill="rgb(42,144,199)" rx="2" ry="2" />
+<text  x="299.06" y="591.5" >exec_stmts</text>
+</g>
+<g >
+<title>yb::docdb::DocRowwiseIterator::Init (5 samples, 7.58%)</title><rect x="814.5" y="565" width="89.4" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="817.55" y="575.5" >yb::docdb:..</text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (1 samples, 1.52%)</title><rect x="242.4" y="885" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="245.42" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="629" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="639.5" ></text>
+</g>
+<g >
+<title>pgss_ExecutorRun (13 samples, 19.70%)</title><rect x="296.1" y="485" width="232.4" height="15.0" fill="rgb(216,216,255)" rx="2" ry="2" />
+<text  x="299.06" y="495.5" >pgss_ExecutorRun</text>
+</g>
+<g >
+<title>rocksdb::MemTable::Add (3 samples, 4.55%)</title><rect x="99.4" y="549" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="559.5" >rocks..</text>
+</g>
+<g >
+<title>exec_stmt_dynexecute (13 samples, 19.70%)</title><rect x="296.1" y="549" width="232.4" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="299.06" y="559.5" >exec_stmt_dynexecute</text>
+</g>
+<g >
+<title>rocksdb::Version::AddIterators (1 samples, 1.52%)</title><rect x="993.3" y="597" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="607.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBIter::Seek (2 samples, 3.03%)</title><rect x="921.8" y="629" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="924.82" y="639.5" >roc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="188.8" y="517" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="191.79" y="527.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="853" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="863.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::InternalKeyComparator::Compare (3 samples, 4.55%)</title><rect x="1029.1" y="645" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1032.09" y="655.5" >rocks..</text>
+</g>
+<g >
+<title>yb::docdb::PgsqlWriteOperation::~PgsqlWriteOperation (1 samples, 1.52%)</title><rect x="206.7" y="677" width="17.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="209.67" y="687.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocWriteBatch::InsertSubDocument (1 samples, 1.52%)</title><rect x="796.7" y="581" width="17.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="799.67" y="591.5" ></text>
+</g>
+<g >
+<title>yb::client::YBSession::FlushFuture (1 samples, 1.52%)</title><rect x="331.8" y="165" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="334.82" y="175.5" ></text>
+</g>
+<g >
+<title>YBCExecuteInsertIndexForDb (7 samples, 10.61%)</title><rect x="313.9" y="357" width="125.2" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="316.94" y="367.5" >YBCExecuteInser..</text>
+</g>
+<g >
+<title>yb::docdb::(anonymous namespace)::TransactionConflictResolverContext::ReadConflicts (6 samples, 9.09%)</title><rect x="903.9" y="677" width="107.3" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="906.94" y="687.5" >yb::docdb::(a..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="517" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="527.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="485" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="495.5" ></text>
+</g>
+<g >
+<title>yb::rpc::(anonymous namespace)::Worker::Execute (1 samples, 1.52%)</title><rect x="1082.7" y="869" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="879.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::WriteToRocksDB (4 samples, 6.06%)</title><rect x="1011.2" y="789" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="1014.21" y="799.5" >yb::tabl..</text>
+</g>
+<g >
+<title>rocksdb::WriteBatchInternal::InsertInto (4 samples, 6.06%)</title><rect x="1011.2" y="741" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="751.5" >rocksdb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="805" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="815.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgDocOp::SendRequestImpl (4 samples, 6.06%)</title><rect x="313.9" y="261" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="271.5" >yb::pgga..</text>
+</g>
+<g >
+<title>PostmasterMain (13 samples, 19.70%)</title><rect x="296.1" y="853" width="232.4" height="15.0" fill="rgb(83,185,240)" rx="2" ry="2" />
+<text  x="299.06" y="863.5" >PostmasterMain</text>
+</g>
+<g >
+<title>yb::docdb::PgsqlWriteOperation::Apply (6 samples, 9.09%)</title><rect x="796.7" y="613" width="107.2" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="799.67" y="623.5" >yb::docdb::Pg..</text>
+</g>
+<g >
+<title>rocksdb:high:0x (2 samples, 3.03%)</title><rect x="617.9" y="917" width="35.7" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="620.88" y="927.5" >roc..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::ApplyKeyValueRowOperations (3 samples, 4.55%)</title><rect x="99.4" y="661" width="53.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="102.39" y="671.5" >yb::t..</text>
+</g>
+<g >
+<title>yb::pggate::PgApiImpl::NewInsert (1 samples, 1.52%)</title><rect x="474.8" y="389" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="477.85" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="757" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="901" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="911.5" >[[k..</text>
+</g>
+<g >
+<title>maintenance_sch (1 samples, 1.52%)</title><rect x="242.4" y="917" width="17.9" height="15.0" fill="rgb(71,219,71)" rx="2" ry="2" />
+<text  x="245.42" y="927.5" ></text>
+</g>
+<g >
+<title>MemoryContextResetOnly (1 samples, 1.52%)</title><rect x="510.6" y="405" width="17.9" height="15.0" fill="rgb(56,158,213)" rx="2" ry="2" />
+<text  x="513.61" y="415.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 1.52%)</title><rect x="278.2" y="805" width="17.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="281.18" y="815.5" ></text>
+</g>
+<g >
+<title>YBCPgNewInsert (3 samples, 4.55%)</title><rect x="385.5" y="341" width="53.6" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="388.45" y="351.5" >YBCPg..</text>
+</g>
+<g >
+<title>YBProcessUtilityDefaultHook (13 samples, 19.70%)</title><rect x="296.1" y="677" width="232.4" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="299.06" y="687.5" >YBProcessUtilityDefaultHook</text>
+</g>
+<g >
+<title>yb::tablet::RemoveIntentsTask::Run (4 samples, 6.06%)</title><rect x="1011.2" y="837" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="1014.21" y="847.5" >yb::tabl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="773" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="783.5" ></text>
+</g>
+<g >
+<title>yb::docdb::(anonymous namespace)::ConflictResolver::Resolve (14 samples, 21.21%)</title><rect x="760.9" y="693" width="250.3" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="763.91" y="703.5" >yb::docdb::(anonymous namespace):..</text>
+</g>
+<g >
+<title>std::_Function_handler&lt;void  (1 samples, 1.52%)</title><rect x="1082.7" y="821" width="17.9" height="15.0" fill="rgb(250,235,88)" rx="2" ry="2" />
+<text  x="1085.73" y="831.5" ></text>
+</g>
+<g >
+<title>rocksdb::UncompressBlockContents (1 samples, 1.52%)</title><rect x="957.6" y="533" width="17.9" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="960.58" y="543.5" ></text>
+</g>
+<g >
+<title>operator new[] (1 samples, 1.52%)</title><rect x="689.4" y="741" width="17.9" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="692.39" y="751.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::FlushMemTableToOutputFile (2 samples, 3.03%)</title><rect x="617.9" y="821" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="831.5" >roc..</text>
+</g>
+<g >
+<title>yb::tserver::WriteRequestPB::~WriteRequestPB (2 samples, 3.03%)</title><rect x="170.9" y="645" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="173.91" y="655.5" >yb:..</text>
+</g>
+<g >
+<title>yb::rpc::YBInboundConnectionContext::HandleCall (1 samples, 1.52%)</title><rect x="10.0" y="725" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="773" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTableBuilder::Add (1 samples, 1.52%)</title><rect x="546.4" y="757" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::NewIterator (1 samples, 1.52%)</title><rect x="993.3" y="629" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="639.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="789" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="799.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (1 samples, 1.52%)</title><rect x="975.5" y="581" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="978.45" y="591.5" ></text>
+</g>
+<g >
+<title>yb::docdb::PerformRocksDBSeek (2 samples, 3.03%)</title><rect x="868.2" y="517" width="35.7" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="871.18" y="527.5" >yb:..</text>
+</g>
+<g >
+<title>PortalRunMulti (13 samples, 19.70%)</title><rect x="296.1" y="773" width="232.4" height="15.0" fill="rgb(74,176,231)" rx="2" ry="2" />
+<text  x="299.06" y="783.5" >PortalRunMulti</text>
+</g>
+<g >
+<title>postgres (13 samples, 19.70%)</title><rect x="296.1" y="917" width="232.4" height="15.0" fill="rgb(83,185,240)" rx="2" ry="2" />
+<text  x="299.06" y="927.5" >postgres</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::CompactionTask::DoRun (3 samples, 4.55%)</title><rect x="546.4" y="837" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="847.5" >rocks..</text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;yb::tserver::WriteOperationCompletionCallback&gt;::_M_manager (3 samples, 4.55%)</title><rect x="153.0" y="693" width="53.7" height="15.0" fill="rgb(250,235,88)" rx="2" ry="2" />
+<text  x="156.03" y="703.5" >std::..</text>
+</g>
+<g >
+<title>yb::rpc::TcpStream::TryProcessReceived (1 samples, 1.52%)</title><rect x="10.0" y="789" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocDBCompactionFilter::Filter (2 samples, 3.03%)</title><rect x="564.2" y="725" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="567.24" y="735.5" >yb:..</text>
+</g>
+<g >
+<title>yb::rpc::InvokeCallbackTask::Run (1 samples, 1.52%)</title><rect x="1082.7" y="853" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="863.5" ></text>
+</g>
+<g >
+<title>snappy::RawUncompress (1 samples, 1.52%)</title><rect x="957.6" y="517" width="17.9" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="960.58" y="527.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (2 samples, 3.03%)</title><rect x="921.8" y="581" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="924.82" y="591.5" >roc..</text>
+</g>
+<g >
+<title>perf_evsel__enable (1 samples, 1.52%)</title><rect x="260.3" y="805" width="17.9" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="263.30" y="815.5" ></text>
+</g>
+<g >
+<title>yb::tablet::OperationDriver::~OperationDriver (4 samples, 6.06%)</title><rect x="153.0" y="725" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="156.03" y="735.5" >yb::tabl..</text>
+</g>
+<g >
+<title>yb::RefCntBuffer::DoReset (1 samples, 1.52%)</title><rect x="903.9" y="661" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="906.94" y="671.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgSession::ApplyOperation (2 samples, 3.03%)</title><rect x="349.7" y="165" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="352.70" y="175.5" >yb:..</text>
+</g>
+<g >
+<title>start_thread (24 samples, 36.36%)</title><rect x="653.6" y="901" width="429.1" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="656.64" y="911.5" >start_thread</text>
+</g>
+<g >
+<title>rocksdb::InternalKeyPropertiesCollector::InternalAdd (1 samples, 1.52%)</title><rect x="546.4" y="725" width="17.8" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="549.36" y="735.5" ></text>
+</g>
+<g >
+<title>main (1 samples, 1.52%)</title><rect x="260.3" y="885" width="17.9" height="15.0" fill="rgb(40,142,197)" rx="2" ry="2" />
+<text  x="263.30" y="895.5" ></text>
+</g>
+<g >
+<title>yb::rpc::Reactor::RunThread (1 samples, 1.52%)</title><rect x="10.0" y="869" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="533" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="543.5" ></text>
+</g>
+<g >
+<title>start_thread (1 samples, 1.52%)</title><rect x="10.0" y="901" width="17.9" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::MemTableInserter::SingleDeleteCF (4 samples, 6.06%)</title><rect x="1011.2" y="709" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="719.5" >rocksdb:..</text>
+</g>
+<g >
+<title>start_thread (2 samples, 3.03%)</title><rect x="617.9" y="901" width="35.7" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="620.88" y="911.5" >sta..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="325" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="335.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgSession::FlushBufferedOperationsImpl (4 samples, 6.06%)</title><rect x="313.9" y="213" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="223.5" >yb::pgga..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="293" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="303.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::SkipListRep&lt;rocksdb::SingleWriterInlineSkipList&lt;rocksdb::MemTableRep::KeyComparator const&amp;&gt; &gt;::Insert (3 samples, 4.55%)</title><rect x="99.4" y="533" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="543.5" >rocks..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1154.2" y="789" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1157.24" y="799.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_linear_insert&lt;__gnu_cxx::__normal_iterator&lt;std::shared_ptr&lt;yb::client::internal::InFlightOp&gt;*, std::vector&lt;std::shared_ptr&lt;yb::client::internal::InFlightOp&gt;, std::allocator&lt;std::shared_ptr&lt;yb::client::internal::InFlightOp&gt; &gt; &gt; &gt;, __gnu_cxx::__ops::_Val_comp_iter&lt;yb::client::internal::Batcher::FlushBuffersIfReady (1 samples, 1.52%)</title><rect x="331.8" y="85" width="17.9" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="334.82" y="95.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="805" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="815.5" ></text>
+</g>
+<g >
+<title>rocksdb::MergingIterator::Seek (2 samples, 3.03%)</title><rect x="957.6" y="629" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="960.58" y="639.5" >roc..</text>
+</g>
+<g >
+<title>yb::consensus::RaftConsensus::UpdateMajorityReplicated (11 samples, 16.67%)</title><rect x="27.9" y="837" width="196.6" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="847.5" >yb::consensus::RaftConsen..</text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (1 samples, 1.52%)</title><rect x="1082.7" y="885" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="895.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgDmlWrite::AllocWriteRequest (1 samples, 1.52%)</title><rect x="403.3" y="293" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="406.33" y="303.5" ></text>
+</g>
+<g >
+<title>yb::rpc::ServicePoolImpl::Handle (20 samples, 30.30%)</title><rect x="653.6" y="837" width="357.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="656.64" y="847.5" >yb::rpc::ServicePoolImpl::Handle</text>
+</g>
+<g >
+<title>yb::pggate::PgSession::LoadTable (1 samples, 1.52%)</title><rect x="474.8" y="357" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="477.85" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="325" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::FixedSizeFilterBlockReader::MayMatch (1 samples, 1.52%)</title><rect x="850.3" y="405" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="853.30" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hash_bytes (1 samples, 1.52%)</title><rect x="385.5" y="293" width="17.8" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="388.45" y="303.5" ></text>
+</g>
+<g >
+<title>rocksdb::BloomFilterAwareFileFilter::Filter (2 samples, 3.03%)</title><rect x="832.4" y="437" width="35.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="835.42" y="447.5" >roc..</text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (1 samples, 1.52%)</title><rect x="10.0" y="885" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" ></text>
+</g>
+<g >
+<title>runcommand (1 samples, 1.52%)</title><rect x="1100.6" y="917" width="17.9" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="1103.61" y="927.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::Erase (4 samples, 6.06%)</title><rect x="1011.2" y="693" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="1014.21" y="703.5" >rocksdb:..</text>
+</g>
+<g >
+<title>rocksdb::BlockBasedTableBuilder::Add (1 samples, 1.52%)</title><rect x="635.8" y="757" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="638.76" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::BackgroundCallCompaction (3 samples, 4.55%)</title><rect x="546.4" y="821" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="831.5" >rocks..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::BackgroundCompaction (3 samples, 4.55%)</title><rect x="546.4" y="805" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="815.5" >rocks..</text>
+</g>
+<g >
+<title>yb::tablet::WriteOperation::~WriteOperation (4 samples, 6.06%)</title><rect x="153.0" y="709" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="156.03" y="719.5" >yb::tabl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="693" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="703.5" >[[k..</text>
+</g>
+<g >
+<title>start_thread (1 samples, 1.52%)</title><rect x="242.4" y="901" width="17.9" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="245.42" y="911.5" ></text>
+</g>
+<g >
+<title>rocksdb::InternalKeyComparator::Compare (4 samples, 6.06%)</title><rect x="27.9" y="533" width="71.5" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="30.88" y="543.5" >rocksdb:..</text>
+</g>
+<g >
+<title>yb::client::YBSession::Apply (2 samples, 3.03%)</title><rect x="349.7" y="149" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="352.70" y="159.5" >yb:..</text>
+</g>
+<g >
+<title>ExecInsertIndexTuplesOptimized (7 samples, 10.61%)</title><rect x="313.9" y="405" width="125.2" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="316.94" y="415.5" >ExecInsertIndex..</text>
+</g>
+<g >
+<title>boost::detail::function::void_function_obj_invoker1&lt;yb::tablet::DocWriteOperation::DoStart (8 samples, 12.12%)</title><rect x="760.9" y="661" width="143.0" height="15.0" fill="rgb(250,200,89)" rx="2" ry="2" />
+<text  x="763.91" y="671.5" >boost::detail::fun..</text>
+</g>
+<g >
+<title>yb::tablet::TransactionParticipant::ProcessReplicated (4 samples, 6.06%)</title><rect x="27.9" y="693" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="30.88" y="703.5" >yb::tabl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="373" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="383.5" ></text>
+</g>
+<g >
+<title>tcmalloc::CentralFreeList::FetchFromOneSpansSafe (1 samples, 1.52%)</title><rect x="778.8" y="549" width="17.9" height="15.0" fill="rgb(250,242,96)" rx="2" ry="2" />
+<text  x="781.79" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="206.7" y="613" width="17.8" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="209.67" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="309" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="319.5" ></text>
+</g>
+<g >
+<title>__GI___libc_open (1 samples, 1.52%)</title><rect x="1172.1" y="869" width="17.9" height="15.0" fill="rgb(81,228,81)" rx="2" ry="2" />
+<text  x="1175.12" y="879.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::NewInternalIterator (1 samples, 1.52%)</title><rect x="993.3" y="613" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="996.33" y="623.5" ></text>
+</g>
+<g >
+<title>yb::rpc::RpcContext::RpcContext (2 samples, 3.03%)</title><rect x="689.4" y="805" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="692.39" y="815.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="188.8" y="501" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="191.79" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="581" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="591.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::KeyComparator::operator (1 samples, 1.52%)</title><rect x="135.2" y="501" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="138.15" y="511.5" ></text>
+</g>
+<g >
+<title>PortalRun (13 samples, 19.70%)</title><rect x="296.1" y="789" width="232.4" height="15.0" fill="rgb(74,176,231)" rx="2" ry="2" />
+<text  x="299.06" y="799.5" >PortalRun</text>
+</g>
+<g >
+<title>yb::rpc::(anonymous namespace)::Worker::Execute (24 samples, 36.36%)</title><rect x="653.6" y="869" width="429.1" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="656.64" y="879.5" >yb::rpc::(anonymous namespace)::Worker::Execute</text>
+</g>
+<g >
+<title>start_thread (1 samples, 1.52%)</title><rect x="1082.7" y="901" width="17.9" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="1085.73" y="911.5" ></text>
+</g>
+<g >
+<title>yb::docdb::IntentToWriteRequest (4 samples, 6.06%)</title><rect x="27.9" y="629" width="71.5" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="639.5" >yb::docd..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::BackgroundCallFlush (2 samples, 3.03%)</title><rect x="617.9" y="853" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="863.5" >roc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="837" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="847.5" ></text>
+</g>
+<g >
+<title>google::protobuf::MessageLite::ParseFromCodedStream (1 samples, 1.52%)</title><rect x="689.4" y="773" width="17.9" height="15.0" fill="rgb(250,245,99)" rx="2" ry="2" />
+<text  x="692.39" y="783.5" ></text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (24 samples, 36.36%)</title><rect x="653.6" y="885" width="429.1" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="656.64" y="895.5" >yb::Thread::SuperviseThread</text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (2 samples, 3.03%)</title><rect x="617.9" y="885" width="35.7" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="620.88" y="895.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="869" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="879.5" >[[k..</text>
+</g>
+<g >
+<title>rocksdb::FlushJob::WriteLevel0Table (2 samples, 3.03%)</title><rect x="617.9" y="789" width="35.7" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="620.88" y="799.5" >roc..</text>
+</g>
+<g >
+<title>yb::docdb::DocRowwiseIterator::DoInit&lt;yb::docdb::DocPgsqlScanSpec&gt; (5 samples, 7.58%)</title><rect x="814.5" y="549" width="89.4" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="817.55" y="559.5" >yb::docdb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="549" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="709" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="277" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="957.6" y="357" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="960.58" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="206.7" y="597" width="17.8" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="209.67" y="607.5" ></text>
+</g>
+<g >
+<title>consensus_[work (12 samples, 18.18%)</title><rect x="27.9" y="917" width="214.5" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="30.88" y="927.5" >consensus_[work</text>
+</g>
+<g >
+<title>yb::Thread::SuperviseThread (1 samples, 1.52%)</title><rect x="278.2" y="885" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="281.18" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="757" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="767.5" ></text>
+</g>
+<g >
+<title>yb::docdb::BoundedRocksDbIterator::BoundedRocksDbIterator (2 samples, 3.03%)</title><rect x="832.4" y="501" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="835.42" y="511.5" >yb:..</text>
+</g>
+<g >
+<title>yb::tserver::WriteRequestPB::~WriteRequestPB (1 samples, 1.52%)</title><rect x="1082.7" y="773" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="783.5" ></text>
+</g>
+<g >
+<title>yb::rpc::OutboundCall::InvokeCallbackSync (1 samples, 1.52%)</title><rect x="1082.7" y="837" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1085.73" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::ThreadPoolTask::Run (3 samples, 4.55%)</title><rect x="546.4" y="853" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="863.5" >rocks..</text>
+</g>
+<g >
+<title>rocksdb::CompactionJob::Run (3 samples, 4.55%)</title><rect x="546.4" y="789" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="549.36" y="799.5" >rocks..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::RemoveIntentsImpl&lt;std::initializer_list&lt;yb::StronglyTypedUuid&lt;yb::TransactionId_Tag&gt; &gt; &gt; (4 samples, 6.06%)</title><rect x="1011.2" y="805" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="1014.21" y="815.5" >yb::tabl..</text>
+</g>
+<g >
+<title>yb::tablet::WriteOperation::DoReplicated (3 samples, 4.55%)</title><rect x="99.4" y="709" width="53.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="102.39" y="719.5" >yb::t..</text>
+</g>
+<g >
+<title>yb::(anonymous namespace)::PriorityThreadPoolWorker::Run (3 samples, 4.55%)</title><rect x="546.4" y="869" width="53.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="549.36" y="879.5" >yb::(..</text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::SharedDtor (1 samples, 1.52%)</title><rect x="206.7" y="645" width="17.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="209.67" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="837" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="847.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="661" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="671.5" >[[k..</text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::~PgsqlWriteRequestPB (2 samples, 3.03%)</title><rect x="170.9" y="629" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="173.91" y="639.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (2 samples, 3.03%)</title><rect x="1118.5" y="885" width="35.7" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1121.48" y="895.5" >[[k..</text>
+</g>
+<g >
+<title>priority-worker (4 samples, 6.06%)</title><rect x="528.5" y="917" width="71.5" height="15.0" fill="rgb(93,239,93)" rx="2" ry="2" />
+<text  x="531.48" y="927.5" >priority..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="600.0" y="869" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="603.00" y="879.5" ></text>
+</g>
+<g >
+<title>yb::HdrHistogram::Increment (1 samples, 1.52%)</title><rect x="653.6" y="821" width="17.9" height="15.0" fill="rgb(86,233,86)" rx="2" ry="2" />
+<text  x="656.64" y="831.5" ></text>
+</g>
+<g >
+<title>yb::pggate::(anonymous namespace)::ProcessYbctid (2 samples, 3.03%)</title><rect x="439.1" y="373" width="35.7" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="442.09" y="383.5" >yb:..</text>
+</g>
+<g >
+<title>yb::rpc::YBInboundCall::ParseFrom (1 samples, 1.52%)</title><rect x="10.0" y="709" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::ApplyOperation (3 samples, 4.55%)</title><rect x="99.4" y="677" width="53.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="102.39" y="687.5" >yb::t..</text>
+</g>
+<g >
+<title>ExecInsert (11 samples, 16.67%)</title><rect x="296.1" y="437" width="196.6" height="15.0" fill="rgb(90,192,247)" rx="2" ry="2" />
+<text  x="299.06" y="447.5" >ExecInsert</text>
+</g>
+<g >
+<title>yb::docdb::AppendZeroEncodedStrToKey (1 samples, 1.52%)</title><rect x="367.6" y="37" width="17.9" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="370.58" y="47.5" ></text>
+</g>
+<g >
+<title>yb::rpc::Connection::ProcessReceived (1 samples, 1.52%)</title><rect x="10.0" y="773" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" ></text>
+</g>
+<g >
+<title>yb::rpc::RequestHeader::MergePartialFromCodedStream (1 samples, 1.52%)</title><rect x="10.0" y="661" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" ></text>
+</g>
+<g >
+<title>yb::pggate::PgDmlWrite::Exec (4 samples, 6.06%)</title><rect x="313.9" y="309" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="319.5" >yb::pgga..</text>
+</g>
+<g >
+<title>yb::pggate::PgDocOp::SendRequest (4 samples, 6.06%)</title><rect x="313.9" y="277" width="71.6" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="316.94" y="287.5" >yb::pgga..</text>
+</g>
+<g >
+<title>[libc-2.17.so] (1 samples, 1.52%)</title><rect x="1154.2" y="885" width="17.9" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="1157.24" y="895.5" ></text>
+</g>
+<g >
+<title>yb::docdb::PrepareApplyIntentsBatch (4 samples, 6.06%)</title><rect x="27.9" y="645" width="71.5" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="30.88" y="655.5" >yb::docd..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1100.6" y="853" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1103.61" y="863.5" ></text>
+</g>
+<g >
+<title>snappy::RawUncompress (1 samples, 1.52%)</title><rect x="957.6" y="501" width="17.9" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="960.58" y="511.5" ></text>
+</g>
+<g >
+<title>yb::rpc::YBInboundConnectionContext::ProcessCalls (1 samples, 1.52%)</title><rect x="10.0" y="757" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" ></text>
+</g>
+<g >
+<title>ExecuteCallStmt (13 samples, 19.70%)</title><rect x="296.1" y="645" width="232.4" height="15.0" fill="rgb(91,193,248)" rx="2" ry="2" />
+<text  x="299.06" y="655.5" >ExecuteCallStmt</text>
+</g>
+<g >
+<title>yb::pggate::PgSession::LoadTable (1 samples, 1.52%)</title><rect x="421.2" y="293" width="17.9" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="424.21" y="303.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::SkipListRep&lt;rocksdb::SingleWriterInlineSkipList&lt;rocksdb::MemTableRep::KeyComparator const&amp;&gt; &gt;::Iterator::Seek (1 samples, 1.52%)</title><rect x="975.5" y="597" width="17.8" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="978.45" y="607.5" ></text>
+</g>
+<g >
+<title>rocksdb::WriteBatchInternal::InsertInto (3 samples, 4.55%)</title><rect x="99.4" y="597" width="53.6" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="102.39" y="607.5" >rocks..</text>
+</g>
+<g >
+<title>yb::tablet::Tablet::ApplyRowOperations (3 samples, 4.55%)</title><rect x="99.4" y="693" width="53.6" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="102.39" y="703.5" >yb::t..</text>
+</g>
+<g >
+<title>YBCPgBuildYBTupleId (2 samples, 3.03%)</title><rect x="439.1" y="389" width="35.7" height="15.0" fill="rgb(212,129,255)" rx="2" ry="2" />
+<text  x="442.09" y="399.5" >YBC..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="229" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="239.5" ></text>
+</g>
+<g >
+<title>yb::tablet::Tablet::RemoveIntents (4 samples, 6.06%)</title><rect x="1011.2" y="821" width="71.5" height="15.0" fill="rgb(250,200,86)" rx="2" ry="2" />
+<text  x="1014.21" y="831.5" >yb::tabl..</text>
+</g>
+<g >
+<title>google::protobuf::internal::GeneratedMessageReflection::SpaceUsedLong (1 samples, 1.52%)</title><rect x="707.3" y="773" width="17.9" height="15.0" fill="rgb(250,245,99)" rx="2" ry="2" />
+<text  x="710.27" y="783.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="260.3" y="725" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="263.30" y="735.5" ></text>
+</g>
+<g >
+<title>yb::PgsqlWriteRequestPB::SharedDtor (2 samples, 3.03%)</title><rect x="170.9" y="597" width="35.8" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="173.91" y="607.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="725" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="735.5" ></text>
+</g>
+<g >
+<title>rocksdb::NotifyCollectTableCollectorsOnAdd (1 samples, 1.52%)</title><rect x="546.4" y="741" width="17.8" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="549.36" y="751.5" ></text>
+</g>
+<g >
+<title>cmd_record (1 samples, 1.52%)</title><rect x="260.3" y="853" width="17.9" height="15.0" fill="rgb(74,222,74)" rx="2" ry="2" />
+<text  x="263.30" y="863.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="439.1" y="197" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="442.09" y="207.5" ></text>
+</g>
+<g >
+<title>yb::docdb::DocWriteBatch::MoveToWriteBatchPB (2 samples, 3.03%)</title><rect x="760.9" y="613" width="35.8" height="15.0" fill="rgb(250,150,86)" rx="2" ry="2" />
+<text  x="763.91" y="623.5" >yb:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1 samples, 1.52%)</title><rect x="1172.1" y="821" width="17.9" height="15.0" fill="rgb(94,241,94)" rx="2" ry="2" />
+<text  x="1175.12" y="831.5" ></text>
+</g>
+<g >
+<title>yb::rpc::Strand::Done (4 samples, 6.06%)</title><rect x="1011.2" y="853" width="71.5" height="15.0" fill="rgb(250,233,86)" rx="2" ry="2" />
+<text  x="1014.21" y="863.5" >yb::rpc:..</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::FullFilterBitsReader::MayMatch (1 samples, 1.52%)</title><rect x="850.3" y="389" width="17.9" height="15.0" fill="rgb(250,250,97)" rx="2" ry="2" />
+<text  x="853.30" y="399.5" ></text>
+</g>
+</g>
+</svg>
