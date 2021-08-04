@@ -14,7 +14,6 @@
  *  - benchruns will store the runs results
  */
 
-\set ON_ERROR_STOP on
 
 drop procedure if exists setup;
 
@@ -156,9 +155,13 @@ begin
    execute format('select count(*),max(scratch) from "%I"',tab_prefix||to_char(tab_num,'fm0000')) into strict out_count,out_scratch;
    if out_rows < tab_rows then raise exception 'Cannot read % rows from a % rows table',tab_rows,out_rows; end if;
   end if;
+  if prepared then
+   -- deallocate all prepared statements in case the previous run failed
+   deallocate all;
+  end if;
   -- insert info about this run
-  insert into benchruns(start_time, prepared,index_only,tab_rows,pct_update,batch_size,table_name,table_rows,table_scratch) 
-     values (clock_timestamp(),runit.prepared,runit.index_only,runit.tab_rows,runit.pct_update,runit.batch_size,tab_prefix||to_char(tab_num,'fm0000'),out_count,out_scratch) 
+  insert into benchruns(start_time, prepared,index_only,tab_rows,pct_update,batch_size,table_name,table_rows,table_scratch,comments) 
+     values (clock_timestamp(),runit.prepared,runit.index_only,runit.tab_rows,runit.pct_update,runit.batch_size,tab_prefix||to_char(tab_num,'fm0000'),out_count,out_scratch,runit.comments) 
      returning benchruns.job_id into this.job_id;
     commit;
     if prepared then
