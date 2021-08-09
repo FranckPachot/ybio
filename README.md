@@ -102,7 +102,7 @@ example:
 ```
 call runit(tab_prefix=>'bench',tab_num=>1,tab_rows=>1e6::int,run_duration=>interval '1 minutes',pct_update=>10,batch_size=>1e4::int);
 ```
-will run a session for one minute reading a set of 10000 rows within the first 1 million in the bench0001 table (be sure to have inserted enough with setup) and updating 10% of those rows.
+will run a session for one minute reading a set of 10000 rows within the first 1 million in the bench0001 table (be sure to have inserted enough with setup) and updating 10% of those rows. Note that running with a tab_num lower than the rows inserted by setup means that the number of rows selected by the random range will be lower than the batch size.
 Additional parameters:
  - prepared defaults to true in order to use prepared statements
  - index_only defaults to false in order to read from the table (we do a range scan on the index but read rows scattered within the table)

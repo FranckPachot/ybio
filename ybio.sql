@@ -176,7 +176,7 @@ begin
      execute 'prepare myupdate(integer,integer) as '||format(sql_update,tab_prefix||to_char(tab_num,'fm0000'));
     end if; 
     clock_start= clock_timestamp();
-    clock_end := clock_start + run_duration ;   
+    clock_end := clock_start + run_duration ;  
   loop
    first_key:=trunc(random()*((tab_rows-batch_size)-1)+1);
    if (pct_update=100) or (100*(num_updated+0.5*batch_size)/(num_rows+batch_size)<pct_update) then
@@ -194,22 +194,26 @@ begin
     else
      execute format(sql_select,tab_prefix||to_char(tab_num,'fm0000')) into out_count,out_scratch using first_key,first_key+batch_size-1;
     end if;
-   end if;
+   end if; 
    num_batches=num_batches+1;
    num_rows=num_rows+out_count;
    if out_scratch>max_scratch then max_scratch=out_scratch; end if;
    exit when clock_timestamp() >= clock_end;
-   raise notice '% rows/s on %, job: % batch#: %, total: % rows read, % % updated, last: % rows between  % and %'
-    ,to_char(round(num_rows/extract(epoch from clock_timestamp()-clock_start)),'999999') -- RIOPS from start
-    ,tab_prefix||to_char(tab_num,'fm0000') -- table name
-    ,to_char(job_id,'99999') -- job number
-    ,to_char(num_batches,'999999') -- number of iterations from start
-    ,to_char(num_rows,'99999999999') -- total number of rows read
-    ,to_char(100*num_updated/num_rows,'999D9'),'%' -- percentage updated
-    ,(out_count) -- number of rows read
-    ,(first_key+batch_size-1) -- the between range end
-    ,(first_key) -- the between range start
-   ;
+   if num_rows>0 then 
+    raise notice '% rows/s on %, job: % batch#: %, total: % rows read, % % updated, last: % rows between  % and %'
+     ,to_char(round(num_rows/extract(epoch from clock_timestamp()-clock_start)),'999999') -- RIOPS from start
+     ,tab_prefix||to_char(tab_num,'fm0000') -- table name
+     ,to_char(job_id,'99999') -- job number
+     ,to_char(num_batches,'999999') -- number of iterations from start
+     ,to_char(num_rows,'99999999999') -- total number of rows read
+     ,to_char(100*num_updated/num_rows,'999D9'),'%' -- percentage updated
+     ,(out_count) -- number of rows read
+     ,(first_key+batch_size-1) -- the between range end
+     ,(first_key) -- the between range start
+    ;
+   else
+    raise notice 'No rows found where mykey between % and % --> tab_rows should match the one used at setup()',first_key,first_key+batch_size-1;
+   end if;
     -- intermediate commit for each batch
     commit;
   end loop;
