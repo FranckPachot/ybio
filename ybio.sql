@@ -56,7 +56,7 @@ begin
   execute format('create table %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tab_tablets when 0 then '' else format('split into %s tablets',tab_tablets)end);
   -- index the table on mykey (could be done afterwards but I like homogenous work)
   -- build the SPLIT AT clause for CREATE INDEX	
-  if ind_tablets>0 then
+  if ind_tablets>1 then
    ind_split_clause:=format(' split at values(');
    for i in 1..ind_tablets-1 loop
     if i>1 then ind_split_clause:=format('%s%s',ind_split_clause,','); end if;
