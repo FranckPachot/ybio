@@ -1,11 +1,11 @@
 drop table if exists ysql_metrics;
+create table if not exists ysql_metrics (snaptime timestamp,hostname text,source text,metrics jsonb, primary key(hostname hash,snaptime asc));
 drop function ysql_metrics;
 create or replace function ysql_metrics() returns table(seconds bigint,hostname text,source text,name text,rows bigint,count bigint,sum bigint) as $func$
 begin
-create table if not exists ysql_metrics (snaptime timestamp,hostname text,source text,metrics jsonb, primary key(hostname hash,snaptime asc));
 perform pg_sleep(1);
 copy ysql_metrics(snaptime,hostname,source,metrics) 
-from program $copy$curl -s http://localhost:13000/metrics | jq -c '.[] | select (.type="server") | .metrics' | sed -e "s/^/`date +"%Y-%m-%d %H:%M:%S"`\t`hostname`\tYSQL server\t/" $copy$;
+from program $copy$curl -s http://localhost:13000/metrics | jq -c '.[] | select (.type="server") | .metrics' | sed -e "s/^/`date +"%Y-%m-%d %H:%M:%S"`\t`hostname`\tYSQL server\t/" $copy$ with (rows_per_transaction 0);
 return query with snaps as (
 select v.snaptime,v.hostname,v.source,replace(m.name,'handler_latency_yb_ysqlserver_SQLProcessor_','') "name"
 ,m.rows-lag(m.rows) over w "rows",m.count-lag(m.count) over w "count",m.sum-lag(m.sum) over w "sum"
