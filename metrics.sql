@@ -1,7 +1,7 @@
 drop table if exists ysql_metrics;
 create table if not exists ysql_metrics (snaptime timestamp,hostname text,source text,metrics jsonb, primary key(hostname hash,snaptime asc));
 drop function ysql_metrics;
-create or replace function ysql_metrics() returns table(seconds bigint,hostname text,source text,name text,rows bigint,count bigint,sum bigint) as $func$
+create or replace function ysql_metrics() returns table(seconds bigint,hostname text,source text,name text,rows bigint,calls bigint,msecs float,row_per_sec bigint) as $func$
 begin
 perform pg_sleep(1);
 copy ysql_metrics(snaptime,hostname,source,metrics) 
@@ -13,8 +13,9 @@ select v.snaptime,v.hostname,v.source,replace(m.name,'handler_latency_yb_ysqlser
 from ysql_metrics v, jsonb_to_recordset(v.metrics) as m("name" text,"count" bigint,"rows" bigint,"sum" bigint)
 window w as (partition by v.hostname,v.source,m.name order by snaptime)
 ), last as (
-select v.seconds::bigint,v.hostname,v.source,v.name,v.rows::bigint,v.count::bigint,v.sum::bigint
-from snaps v where v.snaptime=v.last_snaptime and v.rows>0 and v.count>0 and v.sum>0
+select v.seconds::bigint,v.hostname,v.source,v.name,v.rows::bigint,v.count::bigint,v.sum/1000::float "sum/1e3"
+,(v.rows/v.seconds)::bigint row_per_sec
+from snaps v where v.snaptime=v.last_snaptime and v.count>0 
 ) select * from last v order by v.name;
 end;
 $func$ language plpgsql;
