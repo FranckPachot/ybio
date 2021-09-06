@@ -2,6 +2,7 @@
 Example:
 ```
 sudo perf record --call-graph fp -F99 -e cpu-cycles -u $(whoami) -a sleep 15 && sudo chown $(whoami) perf.data
+git clone https://github.com/brendangregg/FlameGraph.git
 perf script -i perf.data | FlameGraph/stackcollapse-perf.pl | FlameGraph/flamegraph.pl --colors green --width=2400 --hash --cp | tee perf.svg 
 
 ```
