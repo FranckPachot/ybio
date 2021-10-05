@@ -1,4 +1,4 @@
-# record perf samples during 2 minutes (run on the yugabyte server while the program is running)
+# record perf samples during 1 minutes (run on the yugabyte server while the program is running)
 sudo perf record --call-graph fp -F99 -e cpu-cycles -a sleep 60
 # get Brendan Gregg flamegraph tool
 git clone https://github.com/brendangregg/FlameGraph.git
