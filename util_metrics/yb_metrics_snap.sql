@@ -79,7 +79,7 @@ select
  ,value::float-lead(value::float) over snap_window as delta
  ,extract(epoch from snap_time-lead(snap_time) over snap_window) as seconds
 from tablet_metrics
-where name like '%inserted%' 
+--where name like '%inserted%' 
 window snap_window as (partition by host,type,namespace_name,table_name,name order by snap_time desc)
 )
 select snap_time,host,namespace_name,table_name,id,name,value,delta,seconds::int
