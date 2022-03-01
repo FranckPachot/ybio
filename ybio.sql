@@ -67,7 +67,7 @@ begin
   if index_as_pk then
     execute format('alter table %I add constraint %I_pk_mykey primary key (mykey)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
   else
-   execute format('create index nonconcurrently if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
+   execute format('create index if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
   end if;
   -- insert rows in several passes
   raise notice 'Inserting % rows in % batches of %',tab_rows,ceil(tab_rows/batch_size),batch_size;
