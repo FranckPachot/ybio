@@ -1,7 +1,7 @@
 # record perf samples during 1 minutes (run on the yugabyte server while the program is running)
-sudo perf record --call-graph fp -F99 -e cpu-cycles -a sleep 60
+sudo perf record --call-graph fp -F99 -e cpu-cycles -a sleep ${SLEEP:-60}
 # get Brendan Gregg flamegraph tool
-type git || sudo yum install -y git
+type git || sudo yum install -y git perl-open.noarch
 git clone https://github.com/brendangregg/FlameGraph.git
 # get my color map for YugabyteDB and PostgreSQL functions
 wget -c https://raw.githubusercontent.com/FranckPachot/ybio/main/util_flamegraph/palette.map
