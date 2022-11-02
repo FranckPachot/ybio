@@ -53,7 +53,7 @@ begin
   -- there's a flag to drop the existing tables	
   if recreate then execute format('drop table if exists %I',tab_prefix||to_char(tab_num,'fm0000')); end if;
   -- create the table
-  execute format('create table %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tab_tablets when 0 then '' else format('split into %s tablets',tab_tablets)end);
+  execute format('create table if not exists %I (mykey bigint, scratch bigint, filler char(%s)) %s',tab_prefix||to_char(tab_num,'fm0000'),filler,case tab_tablets when 0 then '' else format('split into %s tablets',tab_tablets)end);
   -- index the table on mykey (could be done afterwards but I like homogenous work)
   -- build the SPLIT AT clause for CREATE INDEX	
   if ind_tablets>1 then
