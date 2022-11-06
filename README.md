@@ -74,6 +74,7 @@ Additional parameters:
  - filler: is the size of an additional column in the rows that can be used to create larger rows
  - recreate: by default at true which will drop the existing tables before re-creating them
  - index_as_pk: by default at false so we have no primary key (which means in YugabyteDB a UUID is created for the PK) so that we have rows scattered. For database with heap tables (PostgreSQL) better to define "mykey" as the primary key as it doesn't change the physical organisation
+ - orderby: the default is 'scratch' which is the random column so that inserts are scattered. With null, it will be ordered as generated (no order by). `yb_hash_code(mykey)`
 
 You can create many tables (with a different tab_num) if you want to run multiple sessions concurrently that doesn't touch the same table.
 

@@ -43,7 +43,9 @@ create or replace procedure setup(
    -- filler characters (not very useful here)
    filler int default 1,
    -- drops the table to recreate it
-   recreate boolean default true
+   recreate boolean default true,
+   -- scatter primary keys by ordering on scratch 
+   orderby text default 'scratch'
 ) language plpgsql as
 $setup$
 declare
@@ -65,7 +67,7 @@ begin
    ind_split_clause:=format('%s)',ind_split_clause);
   end if;
   if index_as_pk then
-    execute format('alter table %I add constraint %I_pk_mykey primary key (mykey)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
+    execute format('alter table %I add constraint %I_pk_mykey primary key (mykey)',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
   else
    execute format('create index if not exists %I_asc_mykey on %I(mykey asc)%s',tab_prefix||to_char(tab_num,'fm0000'),tab_prefix||to_char(tab_num,'fm0000'),ind_split_clause);
   end if;
@@ -75,9 +77,9 @@ begin
   for i in 1..ceil(tab_rows/batch_size) loop
     -- generate numbers and shuffle them with the random scratch
     execute format('insert into %I 
-     select generate_series::bigint*%s+%s mykey, (random()*%s)::bigint as scratch , lpad(%L,%s,md5(random()::text)) filler 
-     from generate_series(1,%s) order by scratch'
-    ,tab_prefix||to_char(tab_num,'fm0000'),ceil(tab_rows/batch_size),i,tab_rows,'',filler,batch_size);
+     select * from (select generate_series::bigint*%s+%s mykey, (random()*%s)::bigint as scratch , lpad(%L,%s,md5(random()::text)) filler 
+     from generate_series(1,%s) ) as generated %s'
+    ,tab_prefix||to_char(tab_num,'fm0000'),ceil(tab_rows/batch_size),i,tab_rows,'',filler,batch_size,coalesce('order by '||orderby,''));
     -- output a message for each loop
     raise notice 'Table % Progress: % % (% rows) at % rows/s',tab_prefix||to_char(tab_num,'fm0000'),to_char((100*(i::float)/ceil(tab_rows/batch_size)),'999.99'),'%',to_char(i*batch_size,'99999999999'),to_char((i*batch_size)/extract(epoch from clock_timestamp()-clock_start),'999999');
     -- intermediate commit for each batch
