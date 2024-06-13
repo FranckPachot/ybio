@@ -200,7 +200,6 @@ begin
    num_batches=num_batches+1;
    num_rows=num_rows+out_count;
    if out_scratch>max_scratch then max_scratch=out_scratch; end if;
-   exit when clock_timestamp() >= clock_end;
    if num_rows>0 then 
     raise notice '% rows/s on %, job: % batch#: %, total: % rows read, % % updated, last: % rows between  % and %'
      ,to_char(round(num_rows/extract(epoch from clock_timestamp()-clock_start)),'999999') -- RIOPS from start
@@ -218,6 +217,7 @@ begin
    end if;
     -- intermediate commit for each batch
     commit;
+   exit when clock_timestamp() >= clock_end;
   end loop;
     if prepared then
      deallocate myselect;
